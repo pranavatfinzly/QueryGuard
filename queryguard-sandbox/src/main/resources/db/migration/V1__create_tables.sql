@@ -12,7 +12,13 @@ CREATE TABLE customers (
     -- PLANTED-BUG SUPPORT: `country` is intentionally left unindexed. It is the
     -- filter column for the JPQL planted bug in CustomerRepository, so adding an
     -- index here would neutralise that fixture.
-    country        CHAR(2)      NOT NULL,
+    --
+    -- VARCHAR(2) rather than CHAR(2): Postgres reports CHAR as `bpchar`, which
+    -- `spring.jpa.hibernate.ddl-auto=validate` rejects against the entity's
+    -- `@Column(length = 2) String country` (it expects `varchar(2)`), and CHAR's
+    -- blank-padding semantics buy nothing here. Only the *absence of an index*
+    -- matters to the fixture; the type is incidental.
+    country        VARCHAR(2)   NOT NULL,
     loyalty_tier   VARCHAR(16)  NOT NULL DEFAULT 'STANDARD',
     lifetime_value NUMERIC(12, 2) NOT NULL DEFAULT 0,
     signed_up_at   TIMESTAMPTZ  NOT NULL,

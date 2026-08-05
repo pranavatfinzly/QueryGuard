@@ -1,22 +1,20 @@
-"""Stage 3 — Static analysis.
+"""Stage 3 — the rule protocol and registry.
 
-Deterministic rule checks over parsed query ASTs. Runs before any database is
-provisioned, so these findings survive a provisioning failure.
+Deterministic checks over parsed query ASTs. These run before any database is
+provisioned, so their findings survive a provisioning failure.
 
-Planned rules: ``SELECT *``, missing ``WHERE``, leading-wildcard ``LIKE``,
-functions wrapping indexed columns, implicit casts, unbounded result sets,
-``OFFSET``-based deep paging, ``IN`` lists that should be joins, cartesian
-products, and derived-method patterns that fan out.
-
-Each rule ships with fixtures: one query it must flag, and one similar query it
-must not.
+Individual rules live one-per-file under :mod:`queryguard.pipeline.static_rules.rules`
+and are named after the smell they detect (``SelectStarRule``,
+``LeadingWildcardLikeRule``). Each ships with fixtures: one query it must flag,
+and one similar query it must not.
 """
 
 from __future__ import annotations
 
 from typing import Protocol
 
-from modules.models import ExtractedQuery, Finding
+from queryguard.models.finding import Finding
+from queryguard.models.query import ExtractedQuery
 
 __all__ = ["Rule", "RULES", "register", "run_static_rules"]
 

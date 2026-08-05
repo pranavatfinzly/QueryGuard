@@ -83,6 +83,23 @@
       <plugin>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-maven-plugin</artifactId>
+        <configuration>
+          <!--
+            Pin the JVM timezone to UTC.
+
+            Two reasons, one of them load-bearing. The pgjdbc driver sends the
+            JVM's default zone as the `TimeZone` startup parameter, and on a
+            host whose zone resolves to a legacy alias (e.g. `Asia/Calcutta`)
+            the Postgres 16 image rejects the connection outright with
+            `FATAL: invalid value for parameter "TimeZone"` — Flyway never gets
+            to run. Recent tzdata dropped those backward-compat aliases.
+
+            It also keeps seeded `TIMESTAMPTZ` values reproducible across
+            machines, which the fixed random seed in DataSeeder assumes; the
+            seeder already builds every timestamp in UTC.
+          -->
+          <jvmArguments>-Duser.timezone=UTC</jvmArguments>
+        </configuration>
       </plugin>
     </plugins>
   </build>

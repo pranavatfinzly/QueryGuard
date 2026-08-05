@@ -1,16 +1,16 @@
 """QueryGuard FastAPI service.
 
-Run locally:
+Run locally::
 
-    uvicorn main:app --reload
+    uvicorn queryguard.api.main:app --reload
 
 Endpoints:
 
 - ``GET  /health``  — liveness probe.
 - ``POST /analyze`` — run the review pipeline for one pull request.
 
-The pipeline stages themselves live in ``modules/`` and are placeholders; see the
-wiring TODO in :func:`analyze`.
+The pipeline stages live in :mod:`queryguard.pipeline` and are placeholders; see
+the wiring TODO in :func:`analyze`.
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ from typing import Literal
 from fastapi import FastAPI
 from pydantic import BaseModel, Field
 
-from modules.models import Finding, Report, RunContext
+from queryguard.models import Finding, Report, RunContext
 
 app = FastAPI(
     title="QueryGuard",
@@ -80,14 +80,15 @@ def analyze(request: AnalyzeRequest) -> AnalyzeResponse:
     Returns an empty report until the pipeline stages are implemented. Stage
     wiring, in order (see CLAUDE.md):
 
-    1. ``github_client.fetch_pull_request`` / ``fetch_diff`` when ``diff`` is None
-    2. ``extractor.extract_queries``
-    3. ``static_rules.run_static_rules``
-    4. ``dynamic_analysis.provision_reference_db``
-    5. ``dynamic_analysis.explain_analyze`` + ``analyze_plan``
-    6. ``dynamic_analysis.simulate_indexes``
-    7. ``llm_layer.detect_n_plus_one``
-    8. ``github_client.upsert_report_comment`` when ``post_comment`` is set
+    1. ``pipeline.ingest.ingest_pull_request`` when ``diff`` is None
+    2. ``pipeline.extract.extract_queries``
+    3. ``pipeline.static_rules.run_static_rules``
+    4. ``db.provision.provision_reference_db``
+    5. ``pipeline.explain.explain_analyze`` + ``analyze_plan``
+    6. ``pipeline.hypopg.simulate_indexes``
+    7. ``pipeline.nplusone.detect_n_plus_one``
+    8. ``pipeline.report.render_markdown``, then
+       ``integrations.github.upsert_report_comment`` when ``post_comment`` is set
 
     Each stage fails soft: on error, record the stage name in
     ``report.degraded_stages`` and continue rather than failing the PR check.
