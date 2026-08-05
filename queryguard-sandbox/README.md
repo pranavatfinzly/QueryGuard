@@ -80,8 +80,12 @@ always right and a missing index costs almost nothing:
 
 ## Running it
 
-Requires a JDK 21+ and a throwaway Postgres. The Maven wrapper is checked in, so
-no Maven install is needed.
+Requires a JDK and a throwaway Postgres. The Maven wrapper is checked in, so no
+Maven install is needed.
+
+Use **JDK 21** (LTS). `pom.xml` targets 21, and Spring Boot 3.5 supports 17–24 —
+so a newer JDK is outside the supported range even where it happens to work.
+Builds and runs were verified on Temurin 21.0.12.
 
 ```bash
 # Throwaway database
@@ -121,8 +125,13 @@ to back. On the default seed the contrast is stark — same 5,000 rows out:
 
 | | Statements | Wall clock |
 | --- | --- | --- |
-| `buildCustomerOrderSummary` (N+1) | 5,001 | ~5,200 ms |
-| `buildCustomerOrderSummaryBatched` | 2 | ~120 ms |
+| `buildCustomerOrderSummary` (N+1) | 5,001 | 34–48× the batched form |
+| `buildCustomerOrderSummaryBatched` | 2 | baseline |
+
+Compare the two runs against each other, not against a recorded number. Absolute
+timings here moved by 5× across otherwise identical runs on one machine, purely
+with background load — the statement *counts* and their ratio are what reproduce.
+The exerciser logs both so the comparison is always in-run.
 
 The exerciser is read-path only and never touches the destructive fixture.
 

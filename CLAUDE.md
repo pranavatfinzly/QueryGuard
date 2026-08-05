@@ -235,10 +235,11 @@ recorded diff in `tests/fixtures/diffs/` — a path that needs no GitHub credent
 ### The sandbox
 
 `queryguard-sandbox/` is a Spring Boot app carrying the four planted bugs QueryGuard
-must catch, each next to a healthy counterpart that it must stay silent on. It needs a
-JDK 21+ and a throwaway Postgres; the Maven wrapper is checked in, so no Maven install
-is required. See `queryguard-sandbox/README.md` for how to run it and capture a p6spy
-statement log.
+must catch, each next to a healthy counterpart that it must stay silent on. It needs
+**JDK 21** (what `pom.xml` targets; Spring Boot 3.5 supports 17–24, so a newer JDK is
+unsupported even where it works) and a throwaway Postgres. The Maven wrapper is checked
+in, so no Maven install is required. See `queryguard-sandbox/README.md` for how to run
+it and capture a p6spy statement log.
 
 Its value is that it produces *real* evidence: an `EXPLAIN ANALYZE` plan showing a
 sequential scan, and a statement log where the N+1 fixture issues 5,001 queries where
