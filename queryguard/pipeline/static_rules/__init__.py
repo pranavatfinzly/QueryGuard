@@ -1,13 +1,14 @@
 """Stage 3 — Static analysis.
 
-Planned rules: ``SELECT *``, missing ``WHERE``, leading-wildcard ``LIKE``,
-functions wrapping indexed columns, implicit casts, unbounded result sets,
-``OFFSET``-based deep paging, ``IN`` lists that should be joins, cartesian
-products, and derived-method patterns that fan out.
+Implemented rules: ``SELECT *``, missing ``WHERE`` on a write, unbounded result
+set, unindexed filter, non-sargable predicate.
+
+Still planned: ``OFFSET``-based deep paging, ``IN`` lists that should be joins,
+cartesian products, and derived-method patterns that fan out.
 
 Importing this package is what puts rules in the registry: each module under
 :mod:`.rules` calls :func:`register` at import time, so it must be imported here
-to take effect.
+to take effect. The imports below are therefore load-bearing, not conveniences.
 """
 
 from __future__ import annotations
@@ -15,8 +16,41 @@ from __future__ import annotations
 from queryguard.pipeline.static_rules.base import (
     RULES,
     Rule,
+    RuleContext,
     register,
     run_static_rules,
 )
+from queryguard.pipeline.static_rules.engine import (
+    RuleEngine,
+    silence_sqlglot_fallback_warnings,
+)
+from queryguard.pipeline.static_rules.rules.missing_where import MissingWhereRule
+from queryguard.pipeline.static_rules.rules.no_limit import NoLimitRule
+from queryguard.pipeline.static_rules.rules.non_sargable import NonSargableRule
+from queryguard.pipeline.static_rules.rules.select_star import SelectStarRule
+from queryguard.pipeline.static_rules.rules.unindexed_filter import UnindexedFilterRule
+from queryguard.pipeline.static_rules.schema import (
+    UNKNOWN_SCHEMA,
+    SchemaProvider,
+    StaticSchemaProvider,
+    TableSchema,
+)
 
-__all__ = ["RULES", "Rule", "register", "run_static_rules"]
+__all__ = [
+    "MissingWhereRule",
+    "NoLimitRule",
+    "NonSargableRule",
+    "RULES",
+    "Rule",
+    "RuleContext",
+    "RuleEngine",
+    "SchemaProvider",
+    "SelectStarRule",
+    "StaticSchemaProvider",
+    "TableSchema",
+    "UNKNOWN_SCHEMA",
+    "UnindexedFilterRule",
+    "register",
+    "run_static_rules",
+    "silence_sqlglot_fallback_warnings",
+]

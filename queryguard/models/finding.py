@@ -47,7 +47,14 @@ class Finding(BaseModel):
     rule_id: str
     severity: Severity
     title: str
-    explanation: str
+    explanation: str = Field(
+        description="What was found, in terms a reviewer can check against the query."
+    )
+    impact: str = Field(
+        description="Why it is a problem — the consequence at scale, not the observation. "
+        "A finding that only restates what it matched gives a reviewer no reason to act, "
+        "so this is required rather than optional."
+    )
     provenance: Provenance
     query_id: str | None = None
     query_ids: list[str] = Field(

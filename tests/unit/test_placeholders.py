@@ -20,10 +20,8 @@ from queryguard.pipeline import extract
 UNIMPLEMENTED: list[tuple[Callable[..., Any], tuple[Any, ...]]] = [
     (ingest.ingest_pull_request, ("acme/x", 1)),
     (extract.extract_queries, ("",)),
-    (extract.extract_from_sql, ("q.sql", "")),
     (extract.extract_from_java, ("Repo.java", "")),
     (extract.parse_derived_method, ("findByCustomerId", "Order", "Repo.java")),
-    (static_rules.run_static_rules, ([],)),
     (explain.explain_analyze, (None, None)),
     (explain.analyze_plan, (None, {})),
     (hypopg.simulate_indexes, (None, None, {})),
@@ -61,8 +59,16 @@ def test_context_manager_stage_is_not_implemented_yet(
         pass  # pragma: no cover
 
 
-def test_rule_registry_starts_empty() -> None:
-    assert static_rules.RULES == []
+def test_rule_registry_is_populated_by_importing_the_package() -> None:
+    # Registration happens as an import side effect, so a rule module that nobody
+    # imports is a rule that silently never runs. This is the guard for that.
+    assert sorted(rule.rule_id for rule in static_rules.RULES) == [
+        "missing-where",
+        "no-limit",
+        "non-sargable",
+        "select-star",
+        "unindexed-filter",
+    ]
 
 
 def test_comment_marker_is_stable() -> None:
