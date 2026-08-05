@@ -1,0 +1,89 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-parent</artifactId>
+    <version>3.5.0</version>
+    <relativePath/>
+  </parent>
+
+  <groupId>com.queryguard</groupId>
+  <artifactId>queryguard-sandbox</artifactId>
+  <version>0.1.0-SNAPSHOT</version>
+  <name>queryguard-sandbox</name>
+  <description>
+    Deliberately flawed Spring Boot app used as a fixture for QueryGuard.
+    NOT a production template. See README.md.
+  </description>
+
+  <properties>
+    <java.version>21</java.version>
+    <!--
+      JavaFaker 1.0.2 (last released 2020) calls `new SafeConstructor()`, a
+      no-arg constructor that SnakeYAML 2.x removed. Spring Boot 3.x manages
+      SnakeYAML to 2.x, so leaving this unpinned makes every Faker call throw
+      NoSuchMethodError at runtime. Pinning back to 1.33 is the standard
+      workaround. Config is kept in application.properties (not .yml) so Boot
+      does not need SnakeYAML to start.
+
+      The cleaner long-term fix is Datafaker (net.datafaker:datafaker), the
+      maintained fork with the same API surface. JavaFaker is used here because
+      it was explicitly requested.
+    -->
+    <snakeyaml.version>1.33</snakeyaml.version>
+  </properties>
+
+  <dependencies>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-data-jpa</artifactId>
+    </dependency>
+
+    <dependency>
+      <groupId>org.flywaydb</groupId>
+      <artifactId>flyway-core</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.flywaydb</groupId>
+      <artifactId>flyway-database-postgresql</artifactId>
+    </dependency>
+
+    <dependency>
+      <groupId>org.postgresql</groupId>
+      <artifactId>postgresql</artifactId>
+      <scope>runtime</scope>
+    </dependency>
+
+    <!-- Runtime SQL capture, so QueryGuard's N+1 stage can read real statement logs. -->
+    <dependency>
+      <groupId>p6spy</groupId>
+      <artifactId>p6spy</artifactId>
+      <version>3.9.1</version>
+    </dependency>
+
+    <dependency>
+      <groupId>com.github.javafaker</groupId>
+      <artifactId>javafaker</artifactId>
+      <version>1.0.2</version>
+    </dependency>
+
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-test</artifactId>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-maven-plugin</artifactId>
+      </plugin>
+    </plugins>
+  </build>
+</project>

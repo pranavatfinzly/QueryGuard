@@ -1,0 +1,11 @@
+fastapi
+uvicorn
+sqlglot
+psycopg2-binary
+anthropic
+pygithub
+pytest
+
+# Test-only: fastapi.testclient needs an HTTP client at runtime. Current
+# Starlette wants httpx2; plain httpx still works but is deprecated for this.
+httpx2
