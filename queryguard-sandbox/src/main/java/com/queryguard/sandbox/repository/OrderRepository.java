@@ -21,6 +21,9 @@ public interface OrderRepository extends JpaRepository<Order, Long> {
     /** Healthy comparison query: indexed column, bounded range. */
     List<Order> findByStatusAndPlacedAtAfter(OrderStatus status, OffsetDateTime placedAfter);
 
+    /** Added in the fixture PR: the first of two hunks in this file. */
+    List<Order> findByStatusAndCustomerId(OrderStatus status, Long customerId);
+
     /*
      * PLANTED BUG: native query using SELECT * with no WHERE clause. Reads every
      * column of every row in `orders` and materialises the whole table into the
@@ -45,4 +48,10 @@ public interface OrderRepository extends JpaRepository<Order, Long> {
                             + "FROM orders WHERE placed_at >= :since",
             nativeQuery = true)
     List<Object[]> exportRecentOrders(@Param("since") OffsetDateTime since);
+    /**
+     * Added in the fixture PR: the second hunk, far enough from the first that
+     * git emits two separate hunks rather than one.
+     */
+    @Query(value = "SELECT * FROM order_items WHERE sku LIKE '%-REFURB'", nativeQuery = true)
+    List<Object[]> findRefurbishedItems();
 }
