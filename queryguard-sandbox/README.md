@@ -14,9 +14,10 @@ src/main/java/com/queryguard/sandbox/
 ├── domain/          Customer, Order, OrderItem, OrderStatus
 ├── repository/      CustomerRepository, OrderRepository, OrderItemRepository
 ├── service/         ReportingService, MaintenanceService
-└── seed/            DataSeeder (JavaFaker)
+└── seed/            DataSeeder (JavaFaker), FixtureExerciser
 src/main/resources/
 ├── application.properties
+├── spy.properties               p6spy statement-log format
 └── db/migration/V1__create_tables.sql
 ```
 
@@ -59,9 +60,9 @@ only against a database you are willing to lose.
 ## Seed data
 
 `DataSeeder` runs on startup (`sandbox.seed.seed-on-startup`, default `true`) and
-skips if `customers` is already populated. Defaults produce ~5,000 customers,
-~20,000 orders, and ~60,000 items on a fixed random seed (`20260805`), so plan
-fixtures are reproducible.
+skips if `customers` is already populated. On the fixed random seed (`20260805`)
+it produces exactly 5,000 customers, 17,736 orders, and 53,896 order items, so
+plan fixtures are reproducible.
 
 Distributions are skewed rather than uniform, because uniform data hides the
 problems QueryGuard looks for — with even spread the planner's estimates are
@@ -79,8 +80,12 @@ always right and a missing index costs almost nothing:
 
 ## Running it
 
-Requires a JDK 21+ and Maven, plus a local Postgres. There is no Maven wrapper
-checked in — generate one with `mvn -N wrapper:wrapper` if you want `./mvnw`.
+Requires a JDK and a throwaway Postgres. The Maven wrapper is checked in, so no
+Maven install is needed.
+
+Use **JDK 21** (LTS). `pom.xml` targets 21, and Spring Boot 3.5 supports 17–24 —
+so a newer JDK is outside the supported range even where it happens to work.
+Builds and runs were verified on Temurin 21.0.12.
 
 ```bash
 # Throwaway database
@@ -90,10 +95,62 @@ docker run --rm -d --name queryguard-sandbox-db \
   -e POSTGRES_PASSWORD=queryguard \
   -p 5432:5432 postgres:16
 
-mvn spring-boot:run
+./mvnw spring-boot:run          # mvnw.cmd on Windows
 ```
 
 Flyway applies `V1__create_tables.sql` on boot, then the seeder fills the tables.
+The app has no web starter: it runs its startup work and exits.
+
+The build pins the JVM to `-Duser.timezone=UTC` (see `pom.xml`). That is not
+cosmetic — pgjdbc sends the JVM's default zone as the `TimeZone` startup
+parameter, and on a host whose zone resolves to a legacy alias such as
+`Asia/Calcutta`, Postgres 16 rejects the connection outright with
+`FATAL: invalid value for parameter "TimeZone"` and Flyway never runs.
+
+## Capturing a statement log
+
+Every statement goes through p6spy into `target/p6spy-statements.log`, formatted
+as `epoch_millis|elapsed_ms|category|sql` — the contract that
+`queryguard/integrations/p6spy.py` parses. Change one and change the other.
+
+Seeding alone does not exercise the read-path fixtures, so the log holds no N+1
+evidence by default. Turn the exerciser on:
+
+```bash
+./mvnw spring-boot:run -Dspring-boot.run.arguments=--sandbox.exercise-fixtures=true
+```
+
+That runs `buildCustomerOrderSummary` (the N+1) and its batched counterpart back
+to back. On the default seed the contrast is stark — same 5,000 rows out:
+
+| | Statements | Wall clock |
+| --- | --- | --- |
+| `buildCustomerOrderSummary` (N+1) | 5,001 | 34–48× the batched form |
+| `buildCustomerOrderSummaryBatched` | 2 | baseline |
+
+Compare the two runs against each other, not against a recorded number. Absolute
+timings here moved by 5× across otherwise identical runs on one machine, purely
+with background load — the statement *counts* and their ratio are what reproduce.
+The exerciser logs both so the comparison is always in-run.
+
+The exerciser is read-path only and never touches the destructive fixture.
+
+### Why the N+1 is invisible per query
+
+The derived method compiles to a join filtered on the parent's primary key, not
+the bare foreign-key predicate you might expect:
+
+```sql
+select o1_0.id, ... from orders o1_0
+  join customers c1_0 on c1_0.id = o1_0.customer_id
+ where c1_0.id = ?
+```
+
+That plan is an index-only scan on `customers_pkey` feeding an index scan on
+`idx_orders_customer_id`, and it finishes in about 0.09 ms. Each execution is
+genuinely healthy; only the 5,000-fold repetition is the defect. This is exactly
+why the fixture cannot be caught by single-query analysis — and why the statement
+log matters, where the shape appears 5,000 times with 5,000 distinct bind values.
 
 ## Known dependency wrinkle
 

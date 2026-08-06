@@ -13,9 +13,12 @@ from pathlib import Path
 import pytest
 import sqlglot
 
-SANDBOX = Path(__file__).resolve().parent.parent / "queryguard-sandbox"
+SANDBOX = Path(__file__).resolve().parents[2] / "queryguard-sandbox"
 JAVA_ROOT = SANDBOX / "src/main/java/com/queryguard/sandbox"
-MIGRATION = SANDBOX / "src/main/resources/db/migration/V1__create_tables.sql"
+RESOURCES = SANDBOX / "src/main/resources"
+MIGRATION = RESOURCES / "db/migration/V1__create_tables.sql"
+PROPERTIES = RESOURCES / "application.properties"
+SPY_PROPERTIES = RESOURCES / "spy.properties"
 
 PLANTED_BUGS = {
     "native_select_star_no_where": JAVA_ROOT / "repository/OrderRepository.java",
@@ -28,6 +31,14 @@ PLANTED_BUGS = {
 def test_sandbox_project_exists() -> None:
     assert (SANDBOX / "pom.xml").is_file()
     assert MIGRATION.is_file()
+
+
+def test_maven_wrapper_is_checked_in() -> None:
+    # Without the wrapper the sandbox needs a system Maven install, which makes it
+    # unbuildable in CI and on a fresh clone.
+    assert (SANDBOX / "mvnw").is_file()
+    assert (SANDBOX / "mvnw.cmd").is_file()
+    assert (SANDBOX / ".mvn/wrapper/maven-wrapper.properties").is_file()
 
 
 @pytest.mark.parametrize("name", sorted(PLANTED_BUGS))
@@ -83,9 +94,7 @@ def test_bug_four_is_an_update_with_no_where() -> None:
 
 
 def test_destructive_fixture_is_guarded_and_defaults_off() -> None:
-    properties = (SANDBOX / "src/main/resources/application.properties").read_text(
-        encoding="utf-8"
-    )
+    properties = PROPERTIES.read_text(encoding="utf-8")
     assert "sandbox.allow-destructive-fixtures=false" in properties
 
     service = (JAVA_ROOT / "service/MaintenanceService.java").read_text(encoding="utf-8")
@@ -106,7 +115,9 @@ def test_healthy_counterparts_exist_for_false_positive_guarding() -> None:
 
 
 def test_migration_parses_as_postgres() -> None:
-    statements = [s for s in sqlglot.parse(MIGRATION.read_text(encoding="utf-8"), read="postgres") if s]
+    statements = [
+        s for s in sqlglot.parse(MIGRATION.read_text(encoding="utf-8"), read="postgres") if s
+    ]
     # For CREATE TABLE, `statement.this` is a Schema wrapping the Table — reach
     # for the Table node rather than reading `.name` off the wrapper.
     tables = {
@@ -117,8 +128,90 @@ def test_migration_parses_as_postgres() -> None:
     assert tables == {"customers", "orders", "order_items"}
 
 
+def test_country_column_type_matches_the_entity_mapping() -> None:
+    # Regression guard. `CHAR(2)` reads as `bpchar` to Postgres, which
+    # `ddl-auto=validate` rejects against `@Column(length = 2) String country`, so
+    # the app refused to start. Only execution surfaced it — parsing the migration
+    # in isolation cannot.
+    #
+    # Checked against the parsed type rather than the text: `CHAR(2)` is a
+    # substring of `VARCHAR(2)`, so no textual assertion can tell them apart.
+    customers = next(
+        statement
+        for statement in sqlglot.parse(MIGRATION.read_text(encoding="utf-8"), read="postgres")
+        if isinstance(statement, sqlglot.exp.Create)
+        and statement.kind == "TABLE"
+        and statement.find(sqlglot.exp.Table).name == "customers"
+    )
+    country = next(
+        column for column in customers.find_all(sqlglot.exp.ColumnDef) if column.name == "country"
+    )
+
+    assert country.kind.this is sqlglot.exp.DataType.Type.VARCHAR
+    assert country.kind.sql(dialect="postgres") == "VARCHAR(2)"
+
+    entity = (JAVA_ROOT / "domain/Customer.java").read_text(encoding="utf-8")
+    assert "length = 2" in entity
+
+
 def test_seeder_uses_a_fixed_random_seed() -> None:
     seeder = (JAVA_ROOT / "seed/DataSeeder.java").read_text(encoding="utf-8")
     # Reproducible plans depend on reproducible data.
     assert "new Random(randomSeed)" in seeder
     assert "sandbox.seed.random-seed:20260805" in seeder
+
+
+def test_seeder_runs_before_the_fixture_exerciser() -> None:
+    # Both are ApplicationRunners; unordered, the exerciser could query empty
+    # tables and the N+1 fixture would log nothing.
+    seeder = (JAVA_ROOT / "seed/DataSeeder.java").read_text(encoding="utf-8")
+    exerciser = (JAVA_ROOT / "seed/FixtureExerciser.java").read_text(encoding="utf-8")
+
+    assert "@Order(DataSeeder.RUN_ORDER)" in seeder
+    assert "RUN_ORDER = DataSeeder.RUN_ORDER + 1" in exerciser
+
+
+def test_fixture_exerciser_defaults_off_and_skips_the_destructive_fixture() -> None:
+    assert "sandbox.exercise-fixtures=false" in PROPERTIES.read_text(encoding="utf-8")
+
+    exerciser = (JAVA_ROOT / "seed/FixtureExerciser.java").read_text(encoding="utf-8")
+    assert "buildCustomerOrderSummary()" in exerciser
+    # The UPDATE-without-WHERE fixture must never be reachable from an automated
+    # path, only analysed statically.
+    assert "promoteAllToTier" not in exerciser
+    assert "promoteLoyaltyTier" not in exerciser
+
+
+def test_datasource_is_routed_through_p6spy() -> None:
+    properties = PROPERTIES.read_text(encoding="utf-8")
+
+    assert "spring.datasource.url=jdbc:p6spy:postgresql://" in properties
+    assert "spring.datasource.driver-class-name=com.p6spy.engine.spy.P6SpyDriver" in properties
+
+
+def test_spy_properties_format_matches_what_the_parser_expects() -> None:
+    # Cross-file contract: `integrations/p6spy.py` splits on `|` into exactly
+    # timestamp, elapsed, category, sql. Reordering these fields silently breaks
+    # N+1 evidence gathering, so the two files have to move together.
+    from queryguard.integrations import p6spy
+
+    spy = SPY_PROPERTIES.read_text(encoding="utf-8")
+
+    assert "driverlist=org.postgresql.Driver" in spy
+    assert (
+        "customLogMessageFormat=%(currentTime)|%(executionTime)|%(category)|%(sqlSingleLine)" in spy
+    )
+    assert p6spy._FIELD_COUNT == 4
+
+    # Row-level categories would swamp the statements with one line per row.
+    excluded = next(
+        line.split("=", 1)[1] for line in spy.splitlines() if line.startswith("excludecategories=")
+    )
+    assert {"result", "resultset"} <= set(excluded.split(","))
+
+
+def test_p6spy_log_is_written_under_target() -> None:
+    # p6spy's FileLogger does not create missing parent directories, so the path
+    # has to be one the build guarantees exists.
+    spy = SPY_PROPERTIES.read_text(encoding="utf-8")
+    assert "logfile=target/p6spy-statements.log" in spy

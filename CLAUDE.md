@@ -16,10 +16,6 @@ It posts a single idempotent, tagged Markdown comment on the PR explaining what 
 found, why it is slow, and a suggested fix — backed by a real `EXPLAIN ANALYZE` plan,
 measured index impact via HypoPG, and cross-query N+1 detection powered by Claude.
 
-> **Naming note:** the README currently titles the project `hades`. Treat **QueryGuard**
-> as the project name in code, docs, and comments unless told otherwise, and flag the
-> README mismatch rather than silently renaming either one.
-
 ## Non-negotiable constraints
 
 These are the invariants of the product. Do not weaken them for convenience.
@@ -92,68 +88,70 @@ directly except the ones that own those concerns.
    cost deltas), and a suggested fix per finding. Then upsert the tagged comment on
    the PR.
 
-## Recommended folder structure
+## Folder structure
 
-Planned layout — create directories as the corresponding stage is implemented rather
-than scaffolding empty packages up front.
+Target layout. Entries marked `TODO` do not exist yet — create them as the
+corresponding stage is implemented rather than scaffolding empty packages up front.
+Everything unmarked is present, with stage entry points raising
+`NotImplementedError` until they are filled in.
 
 ```
 queryguard/
 ├── api/                     # FastAPI app
-│   ├── main.py              # app factory, lifespan, health/readiness
-│   ├── routes/
-│   │   ├── webhooks.py      # GitHub webhook receiver (signature verification)
-│   │   └── runs.py          # manual/replay run triggers, run status
-│   └── deps.py              # DI: settings, clients, db handles
+│   ├── main.py              # app + health/analyze; uvicorn queryguard.api.main:app
+│   ├── routes/              # TODO webhooks.py (signature verification), runs.py
+│   └── deps.py              # TODO DI: settings, clients, db handles
 ├── pipeline/                # one module per stage, in run order
-│   ├── ingest.py
+│   ├── ingest.py            # PR event -> RunContext + diff
 │   ├── extract/
 │   │   ├── sql.py           # sqlglot-based extraction + normalization
 │   │   ├── java.py          # JavaParser sidecar client
 │   │   └── derived.py       # Spring Data method-name -> query semantics
 │   ├── static_rules/
-│   │   ├── base.py          # Rule protocol, registry, severity enum
-│   │   └── rules/           # one file per rule, named after the smell
-│   ├── explain.py           # EXPLAIN ANALYZE inside BEGIN/ROLLBACK
+│   │   ├── base.py          # Rule protocol, registry
+│   │   └── rules/           # one file per rule, named after the smell (empty)
+│   ├── explain.py           # EXPLAIN ANALYZE inside BEGIN/ROLLBACK, plan parsing
 │   ├── hypopg.py            # candidate indexes + before/after cost compare
 │   ├── nplusone.py          # Claude-powered cross-query analysis
 │   └── report.py            # findings -> ranked Markdown
 ├── db/
 │   ├── provision.py         # Docker/Postgres lifecycle for the reference DB
-│   ├── snapshot.py          # schema dump loading, migration replay
+│   ├── snapshot.py          # TODO schema dump loading, migration replay
 │   └── session.py           # connection/transaction helpers (rollback-only)
 ├── integrations/
 │   ├── github.py            # PyGithub wrapper, idempotent tagged comment upsert
 │   ├── claude.py            # Anthropic client, prompts, structured outputs
-│   └── p6spy.py             # parse captured statement logs
+│   └── p6spy.py             # statement-log parsing — IMPLEMENTED
 ├── models/                  # Pydantic models — the contracts between stages
 │   ├── query.py             # ExtractedQuery, QueryKind, Provenance
 │   ├── finding.py           # Finding, Severity, Evidence, Suggestion
 │   └── report.py            # Report, RunContext
-├── config.py                # pydantic-settings; all env/secrets land here
-└── cli.py                   # local runs against a diff or a directory
+├── config.py                # TODO pydantic-settings; all env/secrets land here
+└── cli.py                   # TODO local runs against a diff or a directory
 
-java-parser/                 # JavaParser sidecar (Gradle/Maven project)
-├── src/main/java/...        # emits JSON on stdout; no analysis logic here
-└── build.gradle
+queryguard-sandbox/          # deliberately flawed Spring Boot app used as a fixture
+                             # four planted bugs + healthy counterparts; see its README
 
-docker/
-├── postgres-hypopg.Dockerfile
-└── docker-compose.dev.yml
+java-parser/                 # TODO JavaParser sidecar (Gradle/Maven project)
+docker/                      # TODO postgres-hypopg.Dockerfile, docker-compose.dev.yml
 
 tests/
 ├── unit/                    # pure logic: rules, parsers, report rendering
-├── integration/             # real Postgres+HypoPG via testcontainers
+│   ├── test_api.py
+│   ├── test_p6spy.py
+│   ├── test_placeholders.py # asserts stages are still unimplemented
+│   └── test_sandbox_fixtures.py  # guards the planted bugs against being "fixed"
+├── integration/             # TODO real Postgres+HypoPG via testcontainers
 ├── fixtures/
-│   ├── sql/                 # query corpus, one file per smell
-│   ├── java/                # repository/entity samples for the Java extractor
-│   ├── plans/               # captured EXPLAIN JSON for offline plan tests
-│   └── diffs/               # recorded PR payloads and diffs
+│   ├── p6spy/               # captured statement logs
+│   ├── sql/                 # TODO query corpus, one file per smell
+│   ├── java/                # TODO repository/entity samples
+│   ├── plans/               # TODO captured EXPLAIN JSON for offline plan tests
+│   └── diffs/               # TODO recorded PR payloads and diffs
 └── conftest.py
 
-.github/workflows/
-├── ci.yml                   # lint, typecheck, test
-└── queryguard.yml           # the reusable workflow consumers call
+.github/workflows/           # TODO ci.yml (lint, typecheck, test)
+                             # TODO queryguard.yml (reusable workflow consumers call)
 ```
 
 ## Coding conventions
@@ -221,7 +219,35 @@ tests/
 
 ## Local development
 
-Bring up the reference Postgres with HypoPG from `docker/docker-compose.dev.yml`, then
-drive a single run through `queryguard/cli.py` against a recorded diff in
-`tests/fixtures/diffs/` — that path needs no GitHub credentials and is the fastest way
-to iterate on rules, plan analysis, or report formatting.
+Unit tests need nothing but Python — no Docker, no JDK, no credentials:
+
+```bash
+pip install -r requirements.txt
+pytest
+uvicorn queryguard.api.main:app --reload    # /health, /analyze
+```
+
+Once `docker/docker-compose.dev.yml` and `queryguard/cli.py` exist, the fastest
+iteration loop for rules, plan analysis, and report formatting will be to bring up the
+reference Postgres with HypoPG and drive a single run through the CLI against a
+recorded diff in `tests/fixtures/diffs/` — a path that needs no GitHub credentials.
+
+### The sandbox
+
+`queryguard-sandbox/` is a Spring Boot app carrying the four planted bugs QueryGuard
+must catch, each next to a healthy counterpart that it must stay silent on. It needs
+**JDK 21** (what `pom.xml` targets; Spring Boot 3.5 supports 17–24, so a newer JDK is
+unsupported even where it works) and a throwaway Postgres. The Maven wrapper is checked
+in, so no Maven install is required. See `queryguard-sandbox/README.md` for how to run
+it and capture a p6spy statement log.
+
+Its value is that it produces *real* evidence: an `EXPLAIN ANALYZE` plan showing a
+sequential scan, and a statement log where the N+1 fixture issues 5,001 queries where
+two would do. Prefer verifying a rule against the sandbox over reasoning about whether
+it should fire.
+
+> A caution the sandbox already demonstrated: static inspection of a query is not the
+> same as knowing what runs. `findByCustomerId` on a `@ManyToOne` compiles to a *join*
+> against `customers` filtered on the parent's primary key, not a bare
+> `orders.customer_id = ?`. A rule written against the assumed SQL would be reasoning
+> about a query that is never issued.

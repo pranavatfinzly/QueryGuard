@@ -18,6 +18,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
+import org.springframework.core.annotation.Order;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
@@ -49,7 +50,15 @@ import org.springframework.transaction.annotation.Transactional;
  * identity sequences are restarted past the seeded range.
  */
 @Component
+@Order(DataSeeder.RUN_ORDER)
 public class DataSeeder implements ApplicationRunner {
+
+    /**
+     * Seeding must precede {@link FixtureExerciser}. Both are runners, and with
+     * neither annotated the relative order is unspecified — which would leave the
+     * exerciser querying empty tables.
+     */
+    static final int RUN_ORDER = 0;
 
     private static final Logger log = LoggerFactory.getLogger(DataSeeder.class);
 
