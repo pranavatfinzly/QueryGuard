@@ -13,6 +13,12 @@ to take effect. The imports below are therefore load-bearing, not conveniences.
 
 from __future__ import annotations
 
+from queryguard.pipeline.static_rules.ast_helpers import (
+    clause,
+    has_clause,
+    resolve_table,
+    table_aliases,
+)
 from queryguard.pipeline.static_rules.base import (
     RULES,
     Rule,
@@ -50,7 +56,11 @@ __all__ = [
     "StaticSchemaProvider",
     "TableSchema",
     "UnindexedFilterRule",
+    "clause",
+    "has_clause",
     "register",
+    "resolve_table",
     "run_static_rules",
     "silence_sqlglot_fallback_warnings",
+    "table_aliases",
 ]

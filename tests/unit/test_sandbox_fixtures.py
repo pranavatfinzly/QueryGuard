@@ -20,6 +20,18 @@ MIGRATION = RESOURCES / "db/migration/V1__create_tables.sql"
 PROPERTIES = RESOURCES / "application.properties"
 SPY_PROPERTIES = RESOURCES / "spy.properties"
 
+
+def _table_name(statement: sqlglot.exp.Expression) -> str | None:
+    """The table a ``CREATE TABLE`` names, or None if the node has none.
+
+    For ``CREATE TABLE``, ``statement.this`` is a Schema wrapping the Table, so
+    the Table node has to be reached for rather than read off the wrapper.
+    ``find`` is Optional, and saying so here keeps every caller narrowed.
+    """
+    table = statement.find(sqlglot.exp.Table)
+    return table.name if table is not None else None
+
+
 PLANTED_BUGS = {
     "native_select_star_no_where": JAVA_ROOT / "repository/OrderRepository.java",
     "jpql_unindexed_column": JAVA_ROOT / "repository/CustomerRepository.java",
@@ -121,9 +133,11 @@ def test_migration_parses_as_postgres() -> None:
     # For CREATE TABLE, `statement.this` is a Schema wrapping the Table — reach
     # for the Table node rather than reading `.name` off the wrapper.
     tables = {
-        statement.find(sqlglot.exp.Table).name
+        name
         for statement in statements
         if isinstance(statement, sqlglot.exp.Create) and statement.kind == "TABLE"
+        for name in [_table_name(statement)]
+        if name is not None
     }
     assert tables == {"customers", "orders", "order_items"}
 
@@ -141,12 +155,13 @@ def test_country_column_type_matches_the_entity_mapping() -> None:
         for statement in sqlglot.parse(MIGRATION.read_text(encoding="utf-8"), read="postgres")
         if isinstance(statement, sqlglot.exp.Create)
         and statement.kind == "TABLE"
-        and statement.find(sqlglot.exp.Table).name == "customers"
+        and _table_name(statement) == "customers"
     )
     country = next(
         column for column in customers.find_all(sqlglot.exp.ColumnDef) if column.name == "country"
     )
 
+    assert country.kind is not None
     assert country.kind.this is sqlglot.exp.DataType.Type.VARCHAR
     assert country.kind.sql(dialect="postgres") == "VARCHAR(2)"
 

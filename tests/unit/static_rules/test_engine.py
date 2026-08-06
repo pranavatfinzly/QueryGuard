@@ -12,6 +12,7 @@ from queryguard.pipeline.static_rules import (
     RULES,
     RuleContext,
     RuleEngine,
+    register,
     run_static_rules,
 )
 from queryguard.pipeline.static_rules.engine import (
@@ -194,3 +195,36 @@ def test_installing_the_filter_twice_does_not_stack_it() -> None:
         if isinstance(existing, _CommandFallbackFilter)
     ]
     assert len(installed) == 1
+
+
+def test_registering_two_rules_with_the_same_id_is_rejected() -> None:
+    # Registration is an import side effect, so the failure this closes is a rule
+    # reachable by two import paths. Its only symptom would have been every one
+    # of its findings appearing twice in the PR comment.
+    class Duplicate:
+        rule_id = "select-star"
+
+        def check(self, context: RuleContext) -> list[Finding]:
+            return []
+
+    before = list(RULES)
+
+    with pytest.raises(ValueError, match="already registered"):
+        register(Duplicate())
+
+    assert before == RULES
+
+
+def test_a_rule_with_a_new_id_still_registers() -> None:
+    class Fresh:
+        rule_id = "test-only-fresh-rule"
+
+        def check(self, context: RuleContext) -> list[Finding]:
+            return []
+
+    rule = Fresh()
+    try:
+        assert register(rule) is rule
+        assert rule in RULES
+    finally:
+        RULES.remove(rule)

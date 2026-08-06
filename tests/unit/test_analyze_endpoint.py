@@ -17,7 +17,7 @@ from fastapi.testclient import TestClient
 
 from queryguard.api.deps import get_analysis_runner
 from queryguard.api.main import INLINE_SQL_PATH, AnalyzeResponse, app
-from queryguard.models import Report, SqlSource
+from queryguard.models import Report, SourceFile
 from queryguard.pipeline.extract import extract_from_sql
 from queryguard.pipeline.runner import AnalysisRunner
 
@@ -261,7 +261,7 @@ def test_the_route_uses_the_injected_runner(
             *,
             repo: str,
             pr_number: int,
-            sources: Sequence[SqlSource],
+            sources: Sequence[SourceFile],
             run_id: str | None = None,
         ) -> Report:
             return super().run(
@@ -282,7 +282,7 @@ def test_an_exploding_runner_does_not_leak_a_stack_trace(
             *,
             repo: str,
             pr_number: int,
-            sources: Sequence[SqlSource],
+            sources: Sequence[SourceFile],
             run_id: str | None = None,
         ) -> Report:
             raise RuntimeError("connection string postgres://user:hunter2@db/prod")
@@ -301,3 +301,99 @@ def test_an_exploding_runner_does_not_leak_a_stack_trace(
     assert response.status_code == 500
     assert "Traceback" not in response.text
     assert "hunter2" not in response.text
+
+
+# --- Sources in any language the extract stage supports -----------------------
+
+
+def test_a_java_source_is_analyzed_through_the_same_endpoint(client: TestClient) -> None:
+    # The extract stage routes by extension and returns `ExtractedQuery` whatever
+    # the language, so the endpoint has no reason to be SQL-only.
+    response = client.post(
+        "/analyze",
+        json={
+            "repo": "acme/x",
+            "pr_number": 1,
+            "sources": [
+                {
+                    "path": "src/CustomerRepository.java",
+                    "content": "public interface CustomerRepository "
+                    "{ Customer findByEmail(String e); }",
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    queries = response.json()["report"]["queries"]
+    assert [query["kind"] for query in queries] == ["spring_data_derived"]
+    assert queries[0]["provenance"]["file"] == "src/CustomerRepository.java"
+
+
+def test_sql_and_other_languages_can_be_submitted_in_one_run(client: TestClient) -> None:
+    response = client.post(
+        "/analyze",
+        json={
+            "repo": "acme/x",
+            "pr_number": 1,
+            "sql_files": [{"path": "migrations/001.sql", "content": "SELECT * FROM orders"}],
+            "sources": [
+                {
+                    "path": "src/CustomerRepository.java",
+                    "content": "public interface CustomerRepository "
+                    "{ Customer findByEmail(String e); }",
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    queries = response.json()["report"]["queries"]
+    assert [query["provenance"]["file"] for query in queries] == [
+        "migrations/001.sql",
+        "src/CustomerRepository.java",
+    ]
+
+
+def test_a_source_in_an_unsupported_language_is_quietly_skipped(client: TestClient) -> None:
+    # A pull request contains READMEs and lock files. "Nothing to analyze here"
+    # is the correct answer, and it is not a degradation.
+    response = client.post(
+        "/analyze",
+        json={
+            "repo": "acme/x",
+            "pr_number": 1,
+            "sources": [{"path": "README.md", "content": "SELECT * FROM orders"}],
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["report"]["queries"] == []
+    assert response.json()["report"]["degraded_stages"] == []
+
+
+def test_a_declared_dialect_is_honoured_rather_than_dropped(client: TestClient) -> None:
+    # `SqlSource.dialect` is a public request field. When the stage took a
+    # `(path, content)` pair it could not reach the extractor, so valid MySQL
+    # came back as an unanalyzable candidate.
+    response = client.post(
+        "/analyze",
+        json={
+            "repo": "acme/x",
+            "pr_number": 1,
+            "sql_files": [
+                {
+                    "path": "migrations/001.sql",
+                    "content": "SELECT `id` FROM orders WHERE id = 1",
+                    "dialect": "mysql",
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    (query,) = body["report"]["queries"]
+    assert query["dialect"] == "mysql"
+    assert query["parse_error"] is None
+    assert body["report"]["degraded_stages"] == []

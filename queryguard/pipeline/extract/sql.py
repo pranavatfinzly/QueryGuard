@@ -11,15 +11,33 @@ import sqlglot
 from sqlglot import exp
 from sqlglot.errors import SqlglotError
 
-from queryguard.models.query import ExtractedQuery, Provenance, QueryKind
+from queryguard.models.query import ExtractedQuery, Provenance, QueryKind, SourceFile, SqlSource
+from queryguard.pipeline.extract.base import DEFAULT_DIALECT, query_id
 
-__all__ = ["extract_from_sql"]
+__all__ = ["SqlExtractor", "extract_from_sql"]
+
+
+class SqlExtractor:
+    """The registered :class:`~queryguard.pipeline.extract.base.Extractor` for SQL.
+
+    Its whole job is to read the one option SQL extraction takes — the dialect —
+    off the source model before delegating. The ``isinstance`` is deliberate and
+    belongs here rather than on the base model: a dialect is meaningless to a
+    Java file, and putting it on
+    :class:`~queryguard.models.query.SourceFile` would make every language's
+    input model carry SQL's concerns. One narrowing check, in the one component
+    that understands what a dialect is.
+    """
+
+    def extract(self, source: SourceFile) -> list[ExtractedQuery]:
+        dialect = source.dialect if isinstance(source, SqlSource) else DEFAULT_DIALECT
+        return extract_from_sql(source.path, source.content, dialect=dialect)
 
 
 def extract_from_sql(
     path: str,
     content: str,
-    dialect: str = "postgres",
+    dialect: str = DEFAULT_DIALECT,
     kind: QueryKind = QueryKind.RAW_SQL,
 ) -> list[ExtractedQuery]:
     """Extract statements from a ``.sql`` file or migration using sqlglot.
@@ -57,7 +75,7 @@ def extract_from_sql(
         # this text is not analyzable — so both produce the same candidate.
         return [
             ExtractedQuery(
-                id=f"{path}:1",
+                id=query_id(path, 1),
                 kind=kind,
                 text=content.strip(),
                 dialect=dialect,
@@ -97,7 +115,7 @@ def extract_from_sql(
 
         queries.append(
             ExtractedQuery(
-                id=f"{path}:{ordinal + 1}",
+                id=query_id(path, ordinal + 1),
                 kind=kind,
                 text=original if original is not None else statement.sql(dialect=dialect),
                 normalized=statement.sql(dialect=dialect, normalize=True),

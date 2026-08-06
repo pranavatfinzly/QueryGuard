@@ -5,7 +5,13 @@ from __future__ import annotations
 from sqlglot import exp
 
 from queryguard.models.finding import Finding, Severity, Suggestion
-from queryguard.pipeline.static_rules.base import RuleContext, clause, register
+from queryguard.pipeline.static_rules.base import (
+    RuleContext,
+    clause,
+    register,
+    resolve_table,
+    table_aliases,
+)
 
 __all__ = ["UnindexedFilterRule"]
 
@@ -52,13 +58,13 @@ class UnindexedFilterRule:
         if where is None:
             return []
 
-        aliases = self._table_aliases(context.ast)
+        aliases = table_aliases(context.ast)
         findings: list[Finding] = []
         seen: set[tuple[str, str]] = set()
 
         for predicate in where.find_all(*_INDEXABLE_PREDICATES):
             for column in self._indexable_columns(predicate):
-                table = self._resolve_table(column, aliases)
+                table = resolve_table(column, aliases)
                 if table is None:
                     continue
 
@@ -93,39 +99,6 @@ class UnindexedFilterRule:
             if isinstance(side, exp.Column):
                 columns.append(side)
         return columns
-
-    @staticmethod
-    def _table_aliases(node: exp.Expression) -> dict[str, str]:
-        """Map every alias and table name to its real table name.
-
-        ``FROM customers c`` yields both ``c -> customers`` and
-        ``customers -> customers``, so a predicate can qualify either way.
-        """
-        aliases: dict[str, str] = {}
-        for table in node.find_all(exp.Table):
-            real = table.name
-            aliases[real.lower()] = real
-            alias = table.alias
-            if alias:
-                aliases[alias.lower()] = real
-        return aliases
-
-    @staticmethod
-    def _resolve_table(column: exp.Column, aliases: dict[str, str]) -> str | None:
-        """Which table a column belongs to, or None when it cannot be known.
-
-        An unqualified column is only resolvable when exactly one table is in play;
-        with a join it could belong to either, and attributing it to the wrong one
-        would produce a confident, wrong finding.
-        """
-        qualifier = column.table
-        if qualifier:
-            return aliases.get(qualifier.lower())
-
-        distinct = set(aliases.values())
-        if len(distinct) == 1:
-            return next(iter(distinct))
-        return None
 
     def _finding(
         self,

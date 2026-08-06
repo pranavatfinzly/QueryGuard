@@ -2,7 +2,7 @@
 
 Catches slow and unsafe database queries in code review, before they reach production.
 
-[![tests](https://img.shields.io/badge/tests-227%20passing-brightgreen)](#testing)
+[![tests](https://img.shields.io/badge/tests-384%20passing-brightgreen)](#testing)
 [![python](https://img.shields.io/badge/python-3.11%2B-blue)](#quick-start)
 [![typed](https://img.shields.io/badge/mypy-strict-blue)](#contributing)
 [![status](https://img.shields.io/badge/status-early%20development-orange)](#current-status)
@@ -47,8 +47,18 @@ which half you get today.
 - **SQL extraction** — every statement in a `.sql` file, migration, or snippet,
   parsed with `sqlglot`. Semicolons inside string literals and dollar-quoted function
   bodies are correctly not treated as boundaries.
-- **JPQL `@Query` extraction** — simple Spring Data JPA annotations in Java classes
-  and interfaces, including text blocks, preserve their source text and provenance.
+- **`@Query` extraction** — simple Spring Data JPA annotations in Java classes and
+  interfaces support JPQL plus native SQL with `nativeQuery = true`, including text
+  blocks, while preserving source text and provenance. Matching runs against a
+  scanned view of the file, so a query that exists only in a comment is not
+  reported and a `default` method's braces do not truncate the interface.
+- **Derived-method extraction** — `findBy`, `countBy`, `existsBy`, and `deleteBy`
+  repository methods with equality predicates joined by `And` decode to a
+  framework-neutral intermediate representation, then render to SQL-shaped
+  semantic queries for static analysis.
+- **Pluggable extraction** — one `Extractor` protocol and an extension registry, so
+  a new source language is a new module plus one registration and no change to any
+  stage downstream.
 - **Accurate provenance** — every query carries `file:line`, resolved from token
   positions, so a finding anchors to the statement rather than the top of the file.
 - **Five static rules** — unqualified writes, unbounded scans, unindexed filters,
@@ -72,10 +82,10 @@ which half you get today.
 ### Coming soon
 
 - **Pull-request ingest** — read the diff from GitHub instead of being handed SQL.
-- **Further Java / JPA extraction** — native queries, `EntityManager` and `Session`
-  calls, named queries, and other unsupported annotation forms.
-- **Spring Data derived methods** — decoding `findByCustomerIdAndStatusOrderBy…` into
-  the query it actually emits.
+- **Further Java / JPA extraction** — `EntityManager` and `Session` calls, named
+  queries, and other unsupported annotation forms.
+- **Further Spring Data derived methods** — operators, ordering, limits, distinct,
+  nested properties, and collection semantics.
 - **Execution plan analysis** — `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)` on an
   isolated Postgres 16 clone, inside `BEGIN` … `ROLLBACK`.
 - **Index simulation** — candidate indexes measured with HypoPG, with real
@@ -94,13 +104,14 @@ silently approximated.
 
 ## Architecture
 
-Extraction has one source-language boundary: `extract_queries(path, content)`. It
-routes `.sql` files to the SQL extractor and `.java` files to narrow JPQL `@Query`
-extraction.
-every route returns `list[ExtractedQuery]`, so analysis does not depend on the source
-language.
+Extraction has one source-language boundary: `extract_source(source)` takes a
+`SourceFile` and returns `list[ExtractedQuery]`, whatever language the file is
+written in. A registry maps file extensions to extractors, so adding a language is
+a new module and one registration — no stage downstream changes, and the
+dispatcher names no language it routes to.
 
-A linear pipeline; each stage consumes the previous stage's typed output.
+A linear pipeline; each stage consumes the previous stage's typed output. Every
+contract is an immutable Pydantic model, so a stage cannot edit its input.
 
 ```
               Pull Request
@@ -140,6 +151,9 @@ Stages 2 and 3 are wired together behind `POST /analyze` by an orchestrator that
 stage order and fail-soft boundaries. Stages 4–8 are not wired, and the pipeline does
 not pretend otherwise: it returns the report those stages would have enriched,
 carrying only what the static path could establish.
+
+Stage contracts, extension points, and the reasoning behind each boundary are
+documented in [docs/architecture.md](docs/architecture.md).
 
 ### Design invariants
 
@@ -203,7 +217,8 @@ queryguard/
 ├── pipeline/             one module per stage, in run order
 │   ├── runner.py         orchestration + fail-soft boundaries
 │   ├── ingest.py         PR event → run context + diff
-│   ├── extract/          sql.py · java.py · derived.py
+│   ├── extract/          base.py · registry.py · dispatcher.py
+│   │                     sql.py · java.py · java_source.py · derived.py
 │   ├── static_rules/     engine, registry, schema context, rules/
 │   ├── explain.py        EXPLAIN ANALYZE + plan parsing
 │   ├── hypopg.py         candidate indexes + cost deltas
@@ -215,7 +230,7 @@ queryguard/
 
 queryguard-sandbox/       Spring Boot fixture app with four planted bugs
 tests/
-├── unit/                 227 tests — no Docker, JDK, or credentials
+├── unit/                 384 tests — no Docker, JDK, or credentials
 └── fixtures/             captured p6spy statement logs
 ```
 
@@ -234,7 +249,7 @@ pip install -r requirements.txt
 Run the tests:
 
 ```bash
-pytest                                    # 227 passed
+pytest                                    # 384 passed
 pytest tests/unit/static_rules/ -v        # just the rule suites
 ```
 
@@ -329,9 +344,11 @@ curl -s localhost:8000/analyze \
 }
 ```
 
-Analyze several named files in one call with `sql_files`. If one cannot be parsed, the
-others are still analyzed and the response reports `status: "degraded"` with
-`degraded_stages: ["extract:<path>"]` — HTTP 200, never a 500.
+Analyze several named files in one call with `sql_files` (SQL, optionally with a
+`dialect`) or `sources` (any language the extract stage routes by extension, such
+as `.java`). If one cannot be parsed, the others are still analyzed and the
+response reports `status: "degraded"` with `degraded_stages: ["extract:<path>"]` —
+HTTP 200, never a 500.
 
 `diff` and `post_comment` are accepted by the schema but return **501**: answering "no
 problems found" to input that was never read is the one failure mode a review bot
@@ -341,13 +358,14 @@ cannot have.
 
 ## Testing
 
-**227 tests. All passing. Under a second. No Docker, JDK, credentials, or network.**
+**384 tests. All passing. Under a second. No Docker, JDK, credentials, or network.**
 
 ```bash
 pytest                                                  # everything
-pytest tests/unit/static_rules/ -v                      # the rule suites (92)
-pytest tests/unit/test_sql_extraction.py -v             # extraction (36)
-pytest tests/unit/test_analyze_endpoint.py -v           # the HTTP surface (16)
+pytest tests/unit/static_rules/ -v                      # the rule suites (94)
+pytest tests/unit/test_sql_extraction.py -v             # SQL extraction (36)
+pytest tests/unit/test_java_source.py -v                # the Java scanner (33)
+pytest tests/unit/test_analyze_endpoint.py -v           # the HTTP surface (20)
 ```
 
 Every rule ships with a false-positive guard as well as a positive case — usually the
@@ -366,7 +384,7 @@ Tests that need Docker will live behind the `integration` marker declared in
 
 **Early development — roughly 30% complete.** QueryGuard today performs
 production-quality SQL extraction and static analysis behind a working HTTP API, with
-a deterministic, fail-soft pipeline and 227 passing tests. Execution-plan analysis,
+a deterministic, fail-soft pipeline and 384 passing tests. Execution-plan analysis,
 HypoPG index simulation, GitHub integration, Java/JPA extraction, AI-powered N+1
 detection, and Markdown reporting are all under active development — their entry
 points exist and raise `NotImplementedError`, and the API refuses requests that would
@@ -394,6 +412,17 @@ design, the folder layout, and the conventions this codebase is held to.
 - **No bare `except`.** Catch the specific exception; where a stage must fail soft,
   catch at the stage boundary, log with the run ID, and return a degraded result.
 - **Formatting and linting:** `ruff format` and `ruff check`, line length 100.
+- **Stage contracts are immutable.** Models derive from `models.base.Contract`;
+  derive a changed value with `model_copy(update=...)` rather than assigning.
+
+**Adding a source language:**
+
+1. Add a module under `queryguard/pipeline/extract/` exposing a class with
+   `extract(source: SourceFile) -> list[ExtractedQuery]`.
+2. Register it: `_EXTRACTORS.register(".ext", YourExtractor())` in
+   `extract/dispatcher.py`, or `register_extractor(...)` from outside the package.
+3. Nothing else changes — no stage downstream knows which language a query came
+   from.
 
 **Adding a static rule:**
 

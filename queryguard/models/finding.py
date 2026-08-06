@@ -9,8 +9,9 @@ from __future__ import annotations
 
 from enum import Enum
 
-from pydantic import BaseModel, Field
+from pydantic import Field
 
+from queryguard.models.base import Contract
 from queryguard.models.query import Provenance
 
 
@@ -22,14 +23,14 @@ class Severity(str, Enum):
     CRITICAL = "critical"
 
 
-class Evidence(BaseModel):
+class Evidence(Contract):
     """Supporting detail for a finding: a plan excerpt, a cost delta, a snippet."""
 
     label: str
     detail: str
 
 
-class Suggestion(BaseModel):
+class Suggestion(Contract):
     """A proposed fix, and the measured impact of applying it where available."""
 
     description: str
@@ -41,7 +42,7 @@ class Suggestion(BaseModel):
     cost_after: float | None = None
 
 
-class Finding(BaseModel):
+class Finding(Contract):
     """One reportable problem, from any analysis stage."""
 
     rule_id: str

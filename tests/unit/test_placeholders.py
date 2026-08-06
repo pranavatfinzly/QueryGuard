@@ -17,7 +17,6 @@ from queryguard.integrations import claude, github
 from queryguard.models import ExtractedQuery, Provenance, QueryKind
 from queryguard.pipeline import (
     explain,
-    extract,
     hypopg,
     ingest,
     nplusone,
@@ -27,7 +26,6 @@ from queryguard.pipeline import (
 
 UNIMPLEMENTED: list[tuple[Callable[..., Any], tuple[Any, ...]]] = [
     (ingest.ingest_pull_request, ("acme/x", 1)),
-    (extract.parse_derived_method, ("findByCustomerId", "Order", "Repo.java")),
     (explain.explain_analyze, (None, None)),
     (explain.analyze_plan, (None, {})),
     (hypopg.simulate_indexes, (None, None, {})),
@@ -107,5 +105,5 @@ def test_models_are_re_exported_at_package_level() -> None:
 
     assert Finding.__name__ == "Finding"
     assert Report.__name__ == "Report"
-    assert Severity.CRITICAL == "critical"
+    assert Severity.CRITICAL.value == "critical"
     assert Suggestion.__name__ == "Suggestion"
