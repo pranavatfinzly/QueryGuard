@@ -1,143 +1,411 @@
 # QueryGuard
 
-It catches slow and unsafe database queries before they merge. It runs on every pull request,
-analyzes SQL, JPA native queries, JPQL/HQL, and Spring Data derived methods against a real execution
-plan, and posts a clear explanation with a suggested fix which is backed by measured index impact via HypoPG
-and cross-query N+1 detection powered by Claude.
+Catches slow and unsafe database queries in code review, before they reach production.
 
-> **Status: one of eight stages done, one partial.** Static analysis (stage 3) is
-> implemented and tested. Extraction (stage 2) is implemented for SQL only — the Java and
-> derived-method halves are still stubs, as is the dispatcher that routes a diff to either.
-> p6spy statement-log parsing is implemented, but it is a supporting integration for the
-> N+1 stage rather than a stage itself. Six stages raise `NotImplementedError`
-> (16 stub entry points), nothing reaches a database yet, and `POST /analyze` still returns
-> an empty report with `status: "not_implemented"` because no stage is wired into it.
-> **150 unit tests pass**, needing no Docker, JDK, or credentials.
+[![tests](https://img.shields.io/badge/tests-227%20passing-brightgreen)](#testing)
+[![python](https://img.shields.io/badge/python-3.11%2B-blue)](#quick-start)
+[![typed](https://img.shields.io/badge/mypy-strict-blue)](#contributing)
+[![status](https://img.shields.io/badge/status-early%20development-orange)](#current-status)
 
-## What works today
+---
 
-| Area | State |
+## Why QueryGuard?
+
+**The problem.** A slow query almost never looks slow. `SELECT * FROM orders` passes
+code review because at review time `orders` has 400 rows. `findByCustomerId` called
+inside a `for` loop reads as ordinary Java — each execution is genuinely fast, and
+only the five-thousandth repetition is the defect. A `WHERE country = ?` predicate
+looks indexed until you check the migration and find it isn't. None of these are
+visible in a diff, so they ship, and they surface months later as a pager alert with
+no obvious cause.
+
+**The solution.** QueryGuard reviews the queries in a pull request the way a database
+specialist would: it extracts every query the diff touches, checks each against
+deterministic rules, and — as those stages land — runs the survivors against a real
+execution plan on an isolated reference database, then posts one comment explaining
+what it found, why it matters at scale, and how to fix it.
+
+**Why execution plans matter.** Static analysis can tell you a query has no `WHERE`
+clause. It cannot tell you whether `WHERE status = 'active'` will use an index,
+because the answer depends on the schema, the statistics, and the planner — not the
+SQL text. Only the plan knows that the predicate resolves to a sequential scan over
+2 million rows, that the row estimate is off by 400×, or that the sort spilled to
+disk. And only a *simulated* index (via HypoPG) can tell you that adding one would
+cut the cost by 90% — before anyone commits to building it.
+
+This is why QueryGuard is built around a real database rather than a linter. It is
+also why the plan-backed half of it is still under construction: getting there
+honestly is more work than pattern-matching SQL, and the project reports exactly
+which half you get today.
+
+---
+
+## Features
+
+### Available now
+
+- **SQL extraction** — every statement in a `.sql` file, migration, or snippet,
+  parsed with `sqlglot`. Semicolons inside string literals and dollar-quoted function
+  bodies are correctly not treated as boundaries.
+- **Accurate provenance** — every query carries `file:line`, resolved from token
+  positions, so a finding anchors to the statement rather than the top of the file.
+- **Five static rules** — unqualified writes, unbounded scans, unindexed filters,
+  `SELECT *`, and non-sargable predicates. Each explains *what* it found, *why* it
+  matters at scale, and *how* to fix it.
+- **Deterministic, ranked findings** — worst severity first, stable across runs. The
+  same input always produces byte-identical output.
+- **Extensible rule engine** — one file per rule, registered at import, parsed once
+  per query, with per-rule failure isolation.
+- **Fail-soft everywhere** — one unreadable file degrades to a named caveat while
+  every other file is still analyzed in full. Never a 500, never a silently empty
+  report.
+- **HTTP API** — `GET /health` and `POST /analyze`, returning a fully typed report.
+- **p6spy statement-log analysis** — parses a real statement log, normalizes literals
+  via the AST, and isolates an N+1 by shape: 5,000 executions with 5,000 distinct bind
+  values, where two queries would have done.
+- **A sandbox with real bugs** — a Spring Boot fixture app carrying four planted
+  performance bugs, each beside a healthy counterpart, so rules are tested for false
+  positives as well as true ones.
+
+### Coming soon
+
+- **Pull-request ingest** — read the diff from GitHub instead of being handed SQL.
+- **Java / JPA extraction** — `@Query` annotations, `createNativeQuery`, JPQL/HQL.
+- **Spring Data derived methods** — decoding `findByCustomerIdAndStatusOrderBy…` into
+  the query it actually emits.
+- **Execution plan analysis** — `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)` on an
+  isolated Postgres 16 clone, inside `BEGIN` … `ROLLBACK`.
+- **Index simulation** — candidate indexes measured with HypoPG, with real
+  before/after cost deltas.
+- **N+1 detection** — cross-query reasoning powered by Claude, corroborated by p6spy
+  statement counts.
+- **Markdown reports and one idempotent PR comment** — tagged, updated in place, never
+  spamming the thread.
+- **Four more static rules** — deep `OFFSET` paging, `IN` lists that should be joins,
+  cartesian products, derived-method fan-out.
+
+Nothing in "Coming soon" exists yet. Stage entry points for each are present and raise
+`NotImplementedError`.
+
+---
+
+## Architecture
+
+A linear pipeline; each stage consumes the previous stage's typed output.
+
+```
+              Pull Request
+                   │
+                   ▼
+   ○  1. Ingest             diff, base/head SHAs
+                   │
+                   ▼
+   ◐  2. Extraction         query text + file:line provenance
+                   │
+                   ▼
+   ●  3. Static Analysis    deterministic rules over parsed ASTs
+                   │
+                   ▼
+   ○  4. Provision          isolated Postgres 16 + HypoPG
+                   │
+                   ▼
+   ○  5. Execution Plan     EXPLAIN ANALYZE inside BEGIN/ROLLBACK
+                   │
+                   ▼
+   ○  6. HypoPG             simulated indexes, before/after cost
+                   │
+                   ▼
+   ○  7. AI Explanation     N+1 patterns across the query set
+                   │
+                   ▼
+   ○  8. Report             findings → ranked Markdown
+                   │
+                   ▼
+             GitHub Comment  ○  one comment, updated in place
+```
+
+`●` implemented and tested  ·  `◐` partial — SQL done, Java/JPQL planned  ·  `○` entry
+point exists, raises `NotImplementedError`
+
+Stages 2 and 3 are wired together behind `POST /analyze` by an orchestrator that owns
+stage order and fail-soft boundaries. Stages 4–8 are not wired, and the pipeline does
+not pretend otherwise: it returns the report those stages would have enriched,
+carrying only what the static path could establish.
+
+### Design invariants
+
+These hold for every stage, present and future:
+
+1. **Never connect to a developer or production database.** Every run clones an
+   isolated reference database from a schema snapshot.
+2. **Every statement runs inside `BEGIN` … `ROLLBACK`.** Nothing QueryGuard executes
+   can commit.
+3. **Read-only with respect to the PR.** QueryGuard comments. It never pushes commits,
+   edits files, or approves or blocks a merge.
+4. **One comment per PR, updated in place**, identified by a hidden marker.
+5. **Fail soft.** A crashed stage degrades the report; it does not fail the check.
+
+---
+
+## Current Capabilities
+
+What QueryGuard does today, end to end, with no Docker, JDK, or credentials:
+
+| It can | Example |
 | --- | --- |
-| **Static analysis** (`pipeline/static_rules/`) | **Implemented.** Five rules, a rule engine, and a schema-context provider. See below. |
-| **SQL extraction** (`pipeline/extract/sql.py`) | **Implemented.** Splits statements on tokenized semicolons (not `str.split(";")`, which breaks on a semicolon inside a string literal), preserves each statement verbatim, and resolves real line numbers for provenance. |
-| **p6spy log parsing** (`integrations/p6spy.py`) | **Implemented.** Normalizes literals out of SQL via the sqlglot AST, groups by statement shape, ranks repeats. |
-| FastAPI surface (`api/main.py`) | **Implemented but unwired.** `GET /health` is live; `POST /analyze` validates input and mints a run ID, then returns an empty report. |
-| Stage contracts (`models/`) | **Implemented.** `ExtractedQuery`, `Provenance`, `QueryKind`, `Finding`, `Severity`, `Evidence`, `Suggestion`, `Report`, `RunContext`. |
-| Sandbox fixture app (`queryguard-sandbox/`) | **Implemented.** Builds and runs; seeds 5,000 customers; four planted bugs each beside a healthy counterpart. |
+| Split multi-statement SQL correctly | A `;` inside `'x;y'` or a `$$ … $$` body is not a boundary |
+| Anchor findings to a line | `migrations/003_orders.sql:47`, not "somewhere in this file" |
+| Flag an unqualified write as CRITICAL | `UPDATE customers SET tier = 'gold'` |
+| Flag an unbounded table scan as HIGH | `SELECT * FROM orders` |
+| Flag non-sargable predicates | `name LIKE '%smith'`, `LOWER(email) = ?`, `CAST(id AS TEXT) = '5'` |
+| Flag a filter with no index behind it | Needs schema context; silent without it, by design |
+| Stay silent on healthy queries | `SELECT id, status FROM orders WHERE placed_at >= :since` → nothing |
+| Rank across files | A CRITICAL in the last file outranks a MEDIUM in the first |
+| Degrade instead of failing | One unparseable file is a named caveat; the rest are analyzed |
+| Refuse honestly | `diff` and `post_comment` return **501**, never a falsely empty report |
+| Isolate an N+1 from a statement log | 5,000 executions, 5,000 distinct binds → one group |
 
-### The static rules
+What it **cannot** do yet: read a pull request, execute anything against a database,
+produce an `EXPLAIN` plan, measure index impact, detect N+1 patterns from source,
+render Markdown, or post a comment.
 
-Rules take a parsed `sqlglot` AST, never a raw string. Each returns `Finding`s carrying a
-severity, an `explanation` (what was found), an `impact` (why it matters at scale), and a
-suggested fix. One rule per file, named after the smell it detects.
+---
 
-| Rule | Severity | Detects |
-| --- | --- | --- |
-| `SelectStarRule` | MEDIUM | `SELECT *` anywhere, including qualified `t.*`. Excludes `COUNT(*)`. |
-| `MissingWhereRule` | CRITICAL | `UPDATE`/`DELETE` with no `WHERE`. Excludes writes scoped by `USING` or `LIMIT`, and `TRUNCATE`. |
-| `NoLimitRule` | HIGH | `SELECT` reading a whole table with no `LIMIT`/`FETCH`. Excludes subqueries, single-row aggregates, filtered queries, and `FROM`-less selects. |
-| `UnindexedFilterRule` | HIGH | `WHERE` predicates on columns with no index. Needs schema context; silent without it. |
-| `NonSargableRule` | MEDIUM | Leading-wildcard `LIKE`, a function wrapping a filtered column, explicit casts, and schema-detected implicit casts. |
+## Roadmap
 
-Two design points worth knowing before you extend them:
+| Milestone | Scope |
+| --- | --- |
+| **1. Static analysis** ✅ | Rule engine, five rules, extraction, HTTP API, fail-soft pipeline |
+| **2. First real PR comment** | Markdown rendering, GitHub diff ingest, one idempotent tagged comment, CLI |
+| **3. Plan-backed findings** | Dockerized Postgres 16 + HypoPG, `EXPLAIN ANALYZE`, plan inspection, index simulation |
+| **4. Java and JPA** | JavaParser sidecar, `@Query`, JPQL/HQL, Spring Data derived methods |
+| **5. AI cross-query analysis** | Claude-powered N+1 detection, corroborated by p6spy statement counts |
+| **6. Production hardening** | Webhook routes with signature verification, CI workflows, reusable GitHub Action |
 
-- **Schema-dependent rules are silent by default.** The stub provider
-  (`UNKNOWN_SCHEMA`) answers "I don't know" to every lookup, and `UnindexedFilterRule`
-  then reports nothing. "No index on that column" is unfalsifiable from query text
-  alone, so a rule that guessed would fire on every predicate in the diff. Real schema
-  loading is `db/snapshot.py`'s job and is not built yet.
-- **`NoLimitRule` only fires on an unfiltered scan.** Flagging every `SELECT` without a
-  `LIMIT` would fire on most correct queries, including the sandbox's deliberately
-  healthy `exportRecentOrders`. Judging a *filtered* but unlimited query needs
-  cardinality, which is the plan stage's job — a static rule cannot tell
-  `WHERE id = ?` from `WHERE status = 'active'`.
+---
 
-### Evidence, not just green tests
-
-The static stage catches the sandbox's planted bugs through the real
-extractor → engine path, and stays silent on their healthy counterparts:
+## Project Structure
 
 ```
-CRITICAL  missing-where      UPDATE has no WHERE clause and affects every row
-HIGH      no-limit           SELECT reads an entire table with no row limit
-MEDIUM    select-s
-tar        Query selects every column with `SELECT *`
+queryguard/
+├── api/                  FastAPI surface
+│   ├── main.py           /health, /analyze
+│   └── deps.py           dependency injection
+├── pipeline/             one module per stage, in run order
+│   ├── runner.py         orchestration + fail-soft boundaries
+│   ├── ingest.py         PR event → run context + diff
+│   ├── extract/          sql.py · java.py · derived.py
+│   ├── static_rules/     engine, registry, schema context, rules/
+│   ├── explain.py        EXPLAIN ANALYZE + plan parsing
+│   ├── hypopg.py         candidate indexes + cost deltas
+│   ├── nplusone.py       cross-query analysis
+│   └── report.py         findings → ranked Markdown
+├── db/                   reference DB lifecycle, rollback-only sessions
+├── integrations/         github.py · claude.py · p6spy.py
+└── models/               Pydantic contracts between stages
+
+queryguard-sandbox/       Spring Boot fixture app with four planted bugs
+tests/
+├── unit/                 227 tests — no Docker, JDK, or credentials
+└── fixtures/             captured p6spy statement logs
 ```
 
-`tests/unit/static_rules/test_planted_bugs_end_to_end.py` asserts each fixture string is
-still present verbatim in the sandbox source it came from, so editing a planted bug fails
-the test rather than silently testing SQL that no longer exists.
+---
 
-The p6spy stage has been run against a statement log captured from a real sandbox
-execution (5,046 statements) and isolates the planted N+1:
+## Quick Start
 
-```
-count= 5000 variants= 5000 total= 12702ms  SELECT o1_0.id, o1_0.customer_id, … FROM orders …
-count=    6 variants=    1 total=    14ms  SET ROLE 'queryguard'
-```
-
-5,000 executions with 5,000 distinct bind values, where two queries would have done. Equal
-`count` and `variants` is what separates an N+1 from a caching problem, where one shape
-would repeat with identical binds.
-
-## What is not built yet
-
-- **Six stages**: ingest, provision, plan analysis (`EXPLAIN`), HypoPG index simulation,
-  N+1 detection, and report rendering — all still `NotImplementedError`.
-- **The rest of extraction**: Java sources, Spring Data derived methods, and the
-  diff dispatcher (`extract_queries`) that decides which extractor a changed file goes to.
-  Only `.sql`-style input works today.
-- **Five of the ~10 planned rules.** Still to write: `OFFSET`-based deep paging, `IN` lists
-  that should be joins, cartesian products, and derived-method fan-out.
-- **No GitHub or Claude integration.** Nothing is fetched, and no comment is ever posted,
-  so the "one idempotent comment per PR" behaviour is unproven.
-- **No database code path.** `db/session.py` and `db/provision.py` are stubs, which means the
-  `BEGIN`/`ROLLBACK` and never-touch-a-real-database invariants in
-  [CLAUDE.md](CLAUDE.md#non-negotiable-constraints) are currently documented intent, not
-  enforced behaviour. They need tests the moment those modules gain bodies.
-- **`/analyze` does not run the pipeline.** The static stage works but nothing calls it
-  from the API; wiring it is the next obvious step.
-- **Missing entirely**: `config.py`, `cli.py`, `docker/`, `java-parser/`, API routes and DI,
-  integration tests, CI workflows, and the `java/`, `plans/`, `diffs/` fixture corpora.
-- **Lint and typecheck have not been run** against the new code. CLAUDE.md requires
-  `ruff check`, `ruff format`, and strict `mypy`; treat the static-rules code as
-  unverified against all three.
-
-## Quick start
+**Requirements:** Python 3.11+. Nothing else — no Docker, no JDK, no API keys.
 
 ```bash
+git clone https://github.com/pranavatfinzly/QueryGuard.git
+cd QueryGuard
 pip install -r requirements.txt
-pytest                                       # 150 tests, no Docker or JDK needed
-uvicorn queryguard.api.main:app --reload     # GET /health, POST /analyze
 ```
 
-Run one rule's suite, or everything static:
+Run the tests:
 
 ```bash
-pytest tests/unit/static_rules/ -v
-pytest tests/unit/static_rules/test_no_limit.py -v
+pytest                                    # 227 passed
+pytest tests/unit/static_rules/ -v        # just the rule suites
 ```
 
-### Test layout
+Start the API:
+
+```bash
+uvicorn queryguard.api.main:app --reload
+```
+
+Interactive docs are then at `http://localhost:8000/docs`.
+
+Use it as a library:
+
+```python
+from queryguard.models import SqlSource
+from queryguard.pipeline.runner import AnalysisRunner
+
+report = AnalysisRunner().run(
+    repo="acme/billing-service",
+    pr_number=42,
+    sources=[SqlSource(path="migrations/003_orders.sql", content="SELECT * FROM orders")],
+)
+
+for finding in report.findings:
+    print(f"{finding.severity.value:8} {finding.rule_id:16} {finding.title}")
+```
 
 ```
-tests/unit/static_rules/    92 tests   five rule suites + engine + end-to-end
-tests/unit/                 58 tests   sandbox fixture guards, p6spy, placeholders, API
+high     no-limit         SELECT reads an entire table with no row limit
+medium   select-star      Query selects every column with `SELECT *`
 ```
 
-Every rule suite pairs each positive case with a false-positive guard — usually the
-sandbox's healthy counterpart to the bug being caught. `tests/unit/static_rules/` holds a
-cross-stage test rather than living under `integration/`, because in this repo
-`integration` means "requires Docker" (see the marker in `pytest.ini`) and the static
-stage deliberately runs before anything is provisioned.
+---
 
-## Where to look next
+## Example API Request
 
-Wiring the implemented stages into `POST /analyze` is the shortest path to something
-end-to-end: extract → static rules → a rendered report needs no Docker and no
-credentials. After that, `db/snapshot.py` is what turns `UnindexedFilterRule` from silent
-into useful.
+```bash
+curl -s localhost:8000/analyze \
+  -H 'content-type: application/json' \
+  -d '{
+    "repo": "acme/billing-service",
+    "pr_number": 42,
+    "sql": "SELECT * FROM orders;"
+  }'
+```
 
-See [CLAUDE.md](CLAUDE.md) for the pipeline stages, folder layout, and conventions, and
-[queryguard-sandbox/README.md](queryguard-sandbox/README.md) for the fixture app — how to
-run it, and how to capture a statement log of your own.
+### Response
+
+```json
+{
+  "run_id": "2c8ba92a-d05e-4c37-a187-915247d6270c",
+  "status": "completed",
+  "report": {
+    "context": {
+      "run_id": "2c8ba92a-d05e-4c37-a187-915247d6270c",
+      "repo": "acme/billing-service",
+      "pr_number": 42
+    },
+    "queries": [
+      {
+        "id": "inline.sql:1", "kind": "raw_sql", "text": "SELECT * FROM orders",
+        "dialect": "postgres", "parse_error": null,
+        "provenance": { "file": "inline.sql", "line": 1 }
+      }
+    ],
+    "findings": [
+      {
+        "rule_id": "no-limit",
+        "severity": "high",
+        "title": "SELECT reads an entire table with no row limit",
+        "explanation": "This SELECT reads `orders` with no WHERE clause and no LIMIT/FETCH, so the result set is the whole table.",
+        "impact": "Cost is proportional to table size with no ceiling, so the query passes review at today's row count and degrades continuously as the table grows...",
+        "provenance": { "file": "inline.sql", "line": 1 },
+        "query_id": "inline.sql:1",
+        "suggestions": [
+          {
+            "description": "Decide what bounds this query and say it in SQL: a WHERE clause if the caller wants a subset, keyset pagination, or a server-side cursor..."
+          }
+        ]
+      },
+      {
+        "rule_id": "select-star",
+        "severity": "medium",
+        "title": "Query selects every column with `SELECT *`",
+        "explanation": "The projection is `*`, so the query returns every column of every row it matches...",
+        "provenance": { "file": "inline.sql", "line": 1 },
+        "query_id": "inline.sql:1"
+      }
+    ],
+    "degraded_stages": []
+  }
+}
+```
+
+Analyze several named files in one call with `sql_files`. If one cannot be parsed, the
+others are still analyzed and the response reports `status: "degraded"` with
+`degraded_stages: ["extract:<path>"]` — HTTP 200, never a 500.
+
+`diff` and `post_comment` are accepted by the schema but return **501**: answering "no
+problems found" to input that was never read is the one failure mode a review bot
+cannot have.
+
+---
+
+## Testing
+
+**227 tests. All passing. Under a second. No Docker, JDK, credentials, or network.**
+
+```bash
+pytest                                                  # everything
+pytest tests/unit/static_rules/ -v                      # the rule suites (92)
+pytest tests/unit/test_sql_extraction.py -v             # extraction (36)
+pytest tests/unit/test_analyze_endpoint.py -v           # the HTTP surface (16)
+```
+
+Every rule ships with a false-positive guard as well as a positive case — usually the
+sandbox's healthy counterpart to the bug being caught, because a review bot that cries
+wolf gets muted. Beyond the per-rule suites, the pipeline is tested for determinism
+(the same diff must not produce two different comments), lossless JSON round-tripping,
+internal consistency (every finding points at a query in the same report, at the line
+that query came from), and concurrency safety under a shared runner.
+
+Tests that need Docker will live behind the `integration` marker declared in
+`pytest.ini`. None exist yet.
+
+---
+
+## Current Status
+
+**Early development — roughly 30% complete.** QueryGuard today performs
+production-quality SQL extraction and static analysis behind a working HTTP API, with
+a deterministic, fail-soft pipeline and 227 passing tests. Execution-plan analysis,
+HypoPG index simulation, GitHub integration, Java/JPA extraction, AI-powered N+1
+detection, and Markdown reporting are all under active development — their entry
+points exist and raise `NotImplementedError`, and the API refuses requests that would
+depend on them rather than returning an empty report. Use it today as a SQL analysis
+library or a local service; it is not yet a working PR bot.
+
+Engineering detail — per-stage status, technical debt, test breakdown, and the next
+milestone's acceptance criteria — is tracked in [STATUS.md](STATUS.md).
+
+---
+
+## Contributing
+
+Contributions are welcome. Read [CLAUDE.md](CLAUDE.md) first — it holds the pipeline
+design, the folder layout, and the conventions this codebase is held to.
+
+**Conventions in brief:**
+
+- **Type hints everywhere**, checked by `mypy --strict`. A new `Any` needs a comment
+  justifying it.
+- **Pydantic models are the stage contracts.** Stages exchange models from
+  `queryguard/models/`, never bare dicts or tuples.
+- **Parse SQL with `sqlglot`; never regex it.** If `sqlglot` cannot parse a candidate,
+  record it as unanalyzable rather than guessing.
+- **No bare `except`.** Catch the specific exception; where a stage must fail soft,
+  catch at the stage boundary, log with the run ID, and return a degraded result.
+- **Formatting and linting:** `ruff format` and `ruff check`, line length 100.
+
+**Adding a static rule:**
+
+1. Add one file under `queryguard/pipeline/static_rules/rules/`, named after the smell
+   it detects, exposing a class with a `rule_id` and a `check(context)` method, and
+   calling `register()` at module scope.
+2. Import it in `static_rules/__init__.py` — registration is an import side effect, so
+   an unimported rule silently never runs.
+3. Add its ID to the registry assertion in `tests/unit/test_placeholders.py`.
+4. Ship a test suite with **at least one query it must flag and one similar query it
+   must not**. Prefer the sandbox's planted bugs and their healthy counterparts over
+   hand-written SQL.
+
+**Before opening a pull request:** `ruff format . && ruff check . && mypy && pytest`
+
+Do not weaken the five design invariants above for convenience, and do not mark
+unfinished work as complete in the documentation — `tests/unit/test_placeholders.py`
+asserts that unimplemented stages stay unimplemented, and that is deliberate.
+
+---
+
+## License
+
+No license has been declared for this repository yet.
