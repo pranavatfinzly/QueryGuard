@@ -103,12 +103,14 @@ class RuleEngine:
         if ast is None:
             return None
 
-        if isinstance(ast, exp.Command):
-            # sqlglot fell back to an opaque Command node, so there is no structure
-            # to apply rules to. Guessing from the raw text would mean regexing SQL.
-            logger.debug(
-                "static_rules: query %s parsed as an opaque Command, skipping", query.id
-            )
+        if not isinstance(ast, exp.Expression) or isinstance(ast, exp.Command):
+            # Two shapes with nothing for a rule to inspect. A Command is sqlglot's
+            # opaque fallback for syntax it cannot model — guessing from its raw text
+            # would mean regexing SQL. A non-Expression is the wider `Expr` base that
+            # `parse_one` is declared to return; it carries no `args`, so there are no
+            # clauses to read even in principle. Every statement-level node sqlglot
+            # produces is an Expression, so in practice this only narrows the type.
+            logger.debug("static_rules: query %s has no inspectable structure, skipping", query.id)
             return None
 
         return ast

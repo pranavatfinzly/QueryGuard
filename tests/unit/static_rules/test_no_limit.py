@@ -32,13 +32,9 @@ NOT_FLAGGED = [
         id="false-positive-guard-export-recent-orders",
     ),
     pytest.param("SELECT * FROM orders LIMIT 100", id="bounded-by-limit"),
-    pytest.param(
-        "SELECT * FROM orders FETCH FIRST 10 ROWS ONLY", id="bounded-by-fetch-first"
-    ),
+    pytest.param("SELECT * FROM orders FETCH FIRST 10 ROWS ONLY", id="bounded-by-fetch-first"),
     pytest.param("SELECT COUNT(*) FROM orders", id="aggregate-returns-a-single-row"),
-    pytest.param(
-        "SELECT COUNT(*), SUM(total_amount) FROM orders", id="all-aggregates-single-row"
-    ),
+    pytest.param("SELECT COUNT(*), SUM(total_amount) FROM orders", id="all-aggregates-single-row"),
     pytest.param("SELECT SUM(total_amount) AS total FROM orders", id="aliased-aggregate"),
     pytest.param("SELECT 1", id="no-from-clause-reads-nothing"),
     pytest.param("SELECT now()", id="function-call-reads-no-table"),
@@ -60,9 +56,7 @@ def test_flags_unbounded_scans(sql: str, make_context: Callable[..., RuleContext
 
 
 @pytest.mark.parametrize("sql", NOT_FLAGGED)
-def test_does_not_flag_bounded_queries(
-    sql: str, make_context: Callable[..., RuleContext]
-) -> None:
+def test_does_not_flag_bounded_queries(sql: str, make_context: Callable[..., RuleContext]) -> None:
     assert NoLimitRule().check(make_context(sql)) == []
 
 

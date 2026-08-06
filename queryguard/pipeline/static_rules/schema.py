@@ -19,10 +19,10 @@ from __future__ import annotations
 from typing import Protocol
 
 __all__ = [
+    "UNKNOWN_SCHEMA",
     "SchemaProvider",
     "StaticSchemaProvider",
     "TableSchema",
-    "UNKNOWN_SCHEMA",
     "UnknownSchema",
 ]
 

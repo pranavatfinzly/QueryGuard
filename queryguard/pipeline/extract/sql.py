@@ -8,6 +8,8 @@ SQL.
 from __future__ import annotations
 
 import sqlglot
+from sqlglot import exp
+from sqlglot.errors import SqlglotError
 
 from queryguard.models.query import ExtractedQuery, Provenance, QueryKind
 
@@ -32,15 +34,27 @@ def extract_from_sql(
     set — the extract stage reports candidates, and the rule engine decides what is
     analyzable.
     """
+    # A UTF-8 BOM is not SQL, but it is not whitespace either, so it reaches the
+    # tokenizer and makes the *entire* file unparseable — one stray byte turning a
+    # perfectly good migration into "could not analyze". Editors on Windows write it
+    # by default, so this is ordinary input rather than a corrupt file. Stripped
+    # before the empty check so a BOM-only file is empty, not unanalyzable.
+    content = content.removeprefix("﻿")
+
     if not content.strip():
         return []
 
     try:
         statements = sqlglot.parse(content, read=dialect)
-    except sqlglot.ParseError as error:
+    except SqlglotError as error:
         # The whole file is unparseable, so there are no statement boundaries to
         # report against. Surface it as one unanalyzable candidate rather than
         # dropping the file silently.
+        #
+        # `SqlglotError` rather than `ParseError` because the two ways this fails are
+        # siblings, not parent and child: an unterminated string literal never reaches
+        # the parser and raises `TokenError` instead. Both mean the same thing here —
+        # this text is not analyzable — so both produce the same candidate.
         return [
             ExtractedQuery(
                 id=f"{path}:1",
@@ -55,21 +69,35 @@ def extract_from_sql(
     spans = _statement_spans(content, dialect)
 
     queries: list[ExtractedQuery] = []
-    for index, statement in enumerate(statements):
-        if statement is None:
-            # sqlglot yields None for an empty segment, e.g. a trailing semicolon.
+    for statement in statements:
+        if statement is None or isinstance(statement, exp.Semicolon):
+            # Two spellings of "this segment holds no query": None for an empty one
+            # (a trailing semicolon, a stray `;;`), and a Semicolon node for one that
+            # holds only comments — `-- migration notes` on its own line parses to a
+            # Semicolon carrying the comment and nothing else.
+            #
+            # Neither produces a token, so `_statement_spans` skips both, and neither
+            # may advance the span cursor. That is why the cursor counts the queries
+            # actually built rather than enumerating `statements`: pairing by the
+            # enumerate() position hands every statement after a stray semicolon or a
+            # comment the *previous* statement's text and line, and lets a comment
+            # through as a query of its own.
             continue
+
+        # Position among the statements that actually exist, which is what `spans` is
+        # indexed by and what "the Nth statement in this file" means to a reviewer.
+        ordinal = len(queries)
 
         # `text` is contractually the query *as written* (see models/query.py), so it
         # is sliced from the source rather than re-rendered from the AST. Rendering
         # would silently rewrite what the reviewer sees — `Customer c` becomes
         # `Customer AS c`, `:tier` becomes `%(tier)s` — and a report that quotes a
         # query the author never wrote is hard to trust.
-        original, line = spans[index] if index < len(spans) else (None, None)
+        original, line = spans[ordinal] if ordinal < len(spans) else (None, None)
 
         queries.append(
             ExtractedQuery(
-                id=f"{path}:{index + 1}",
+                id=f"{path}:{ordinal + 1}",
                 kind=kind,
                 text=original if original is not None else statement.sql(dialect=dialect),
                 normalized=statement.sql(dialect=dialect, normalize=True),

@@ -7,15 +7,23 @@ real behavioural tests.
 
 from __future__ import annotations
 
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 import pytest
 
 from queryguard.db import provision, session
 from queryguard.integrations import claude, github
 from queryguard.models import ExtractedQuery, Provenance, QueryKind
-from queryguard.pipeline import explain, hypopg, ingest, nplusone, report, static_rules
-from queryguard.pipeline import extract
+from queryguard.pipeline import (
+    explain,
+    extract,
+    hypopg,
+    ingest,
+    nplusone,
+    report,
+    static_rules,
+)
 
 UNIMPLEMENTED: list[tuple[Callable[..., Any], tuple[Any, ...]]] = [
     (ingest.ingest_pull_request, ("acme/x", 1)),

@@ -70,7 +70,9 @@ def sandbox_schema() -> StaticSchemaProvider:
                 },
             ),
             "orders": TableSchema(
-                indexed_columns=frozenset({"id", "order_number", "customer_id", "placed_at", "status"}),
+                indexed_columns=frozenset(
+                    {"id", "order_number", "customer_id", "placed_at", "status"}
+                ),
                 column_types={
                     "id": "bigint",
                     "customer_id": "bigint",

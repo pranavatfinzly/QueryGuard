@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from queryguard.models.report import Report, RunContext
 
-__all__ = ["COMMENT_MARKER", "fetch_pull_request", "fetch_diff", "upsert_report_comment"]
+__all__ = ["COMMENT_MARKER", "fetch_diff", "fetch_pull_request", "upsert_report_comment"]
 
 #: Hidden marker identifying QueryGuard's own comment. Changing it orphans every
 #: comment already posted, so a re-run would add a second one instead of editing.

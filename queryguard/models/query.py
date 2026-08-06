@@ -21,6 +21,24 @@ class QueryKind(str, Enum):
     SPRING_DATA_DERIVED = "spring_data_derived"
 
 
+class SqlSource(BaseModel):
+    """One SQL document handed to the extract stage: where it lives and what it says.
+
+    The extract stage needs both halves — the text to parse and the path to anchor
+    findings to — and they travel together often enough (a caller supplies several
+    files, and one failing must not lose the others) that they are a contract rather
+    than two loose arguments.
+    """
+
+    path: str = Field(
+        min_length=1,
+        description='Path this SQL came from, e.g. "migrations/003_orders.sql". '
+        "Recorded as the provenance of every query extracted from it.",
+    )
+    content: str = Field(description="The SQL text; may hold several statements.")
+    dialect: str = "postgres"
+
+
 class Provenance(BaseModel):
     """Where a finding is anchored back to in the diff."""
 

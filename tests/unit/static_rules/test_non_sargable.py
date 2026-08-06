@@ -22,7 +22,9 @@ from queryguard.pipeline.static_rules import (
 @pytest.mark.parametrize(
     "sql",
     [
-        pytest.param("SELECT id FROM customers WHERE full_name LIKE '%smith'", id="leading-wildcard"),
+        pytest.param(
+            "SELECT id FROM customers WHERE full_name LIKE '%smith'", id="leading-wildcard"
+        ),
         pytest.param(
             "SELECT id FROM customers WHERE full_name LIKE '%smith%'", id="both-ends-wildcard"
         ),
@@ -31,9 +33,7 @@ from queryguard.pipeline.static_rules import (
         ),
     ],
 )
-def test_flags_leading_wildcard_like(
-    sql: str, make_context: Callable[..., RuleContext]
-) -> None:
+def test_flags_leading_wildcard_like(sql: str, make_context: Callable[..., RuleContext]) -> None:
     findings = NonSargableRule().check(make_context(sql))
 
     assert len(findings) == 1
@@ -67,7 +67,9 @@ def test_does_not_flag_seekable_like_patterns(
     "sql",
     [
         pytest.param("SELECT id FROM customers WHERE LOWER(email) = 'a@b.c'", id="lower-on-column"),
-        pytest.param("SELECT id FROM orders WHERE DATE(placed_at) = '2024-01-01'", id="date-on-column"),
+        pytest.param(
+            "SELECT id FROM orders WHERE DATE(placed_at) = '2024-01-01'", id="date-on-column"
+        ),
         pytest.param(
             "SELECT id FROM customers WHERE COALESCE(country, 'US') = 'US'", id="coalesce-on-column"
         ),
@@ -92,9 +94,7 @@ def test_flags_functions_wrapping_a_filtered_column(
         pytest.param(
             "SELECT id FROM orders WHERE placed_at > now()", id="function-with-no-column-argument"
         ),
-        pytest.param(
-            "SELECT id FROM customers WHERE email = 'a@b.c'", id="plain-indexed-equality"
-        ),
+        pytest.param("SELECT id FROM customers WHERE email = 'a@b.c'", id="plain-indexed-equality"),
     ],
 )
 def test_does_not_flag_functions_applied_to_the_argument(

@@ -46,9 +46,7 @@ NOT_FLAGGED = [
 
 
 @pytest.mark.parametrize("sql", FLAGGED)
-def test_flags_unqualified_writes(
-    sql: str, make_context: Callable[..., RuleContext]
-) -> None:
+def test_flags_unqualified_writes(sql: str, make_context: Callable[..., RuleContext]) -> None:
     findings = MissingWhereRule().check(make_context(sql))
 
     assert len(findings) == 1
@@ -59,16 +57,14 @@ def test_flags_unqualified_writes(
 
 
 @pytest.mark.parametrize("sql", NOT_FLAGGED)
-def test_does_not_flag_scoped_writes(
-    sql: str, make_context: Callable[..., RuleContext]
-) -> None:
+def test_does_not_flag_scoped_writes(sql: str, make_context: Callable[..., RuleContext]) -> None:
     assert MissingWhereRule().check(make_context(sql)) == []
 
 
 def test_names_the_affected_table(make_context: Callable[..., RuleContext]) -> None:
-    finding = MissingWhereRule().check(
-        make_context("UPDATE customers SET loyalty_tier = 'GOLD'")
-    )[0]
+    finding = MissingWhereRule().check(make_context("UPDATE customers SET loyalty_tier = 'GOLD'"))[
+        0
+    ]
 
     assert "customers" in finding.explanation
 

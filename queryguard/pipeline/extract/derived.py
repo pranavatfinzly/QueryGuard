@@ -30,6 +30,4 @@ def parse_derived_method(
     a method carrying its own ``@Query``, which the Java extractor handles
     instead).
     """
-    raise NotImplementedError(
-        "extract.derived.parse_derived_method is not implemented yet"
-    )
+    raise NotImplementedError("extract.derived.parse_derived_method is not implemented yet")

@@ -26,17 +26,16 @@ def test_parses_every_line_of_a_real_log(nplus1_statement_log: str) -> None:
 
 def test_skips_malformed_lines_instead_of_raising() -> None:
     # A log truncated mid-write should still yield the statements that landed.
-    text = "\n".join(
-        [
-            "1785923413922|1|statement|SELECT 1",
-            "",
-            "not-a-log-line",
-            "abc|1|statement|SELECT 2",  # non-numeric timestamp
-            "1785923413925|x|statement|SELECT 3",  # non-numeric elapsed
-            "1785923413926|2|statement",  # truncated mid-line
-            "1785923413927|3|statement|SELECT 4",
-        ]
-    )
+    lines = [
+        "1785923413922|1|statement|SELECT 1",
+        "",
+        "not-a-log-line",
+        "abc|1|statement|SELECT 2",  # non-numeric timestamp
+        "1785923413925|x|statement|SELECT 3",  # non-numeric elapsed
+        "1785923413926|2|statement",  # truncated mid-line
+        "1785923413927|3|statement|SELECT 4",
+    ]
+    text = "\n".join(lines)
 
     statements = parse_statement_log(text)
 
@@ -75,7 +74,7 @@ def test_a_bom_does_not_swallow_the_first_statement() -> None:
 def test_normalize_does_not_confuse_identifiers_for_literals() -> None:
     # A quoted identifier is not a value; rewriting it would merge two genuinely
     # different statements into one shape.
-    normalized = normalize_sql('SELECT "count" FROM orders WHERE status = \'PAID\'')
+    normalized = normalize_sql("SELECT \"count\" FROM orders WHERE status = 'PAID'")
 
     assert "count" in normalized
     assert "PAID" not in normalized

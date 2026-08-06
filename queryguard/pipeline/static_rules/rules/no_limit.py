@@ -99,9 +99,7 @@ class NoLimitRule:
         if not projections:
             return False
 
-        return all(
-            isinstance(projection.unalias(), exp.AggFunc) for projection in projections
-        )
+        return all(isinstance(projection.unalias(), exp.AggFunc) for projection in projections)
 
     @staticmethod
     def _scanned_table(node: exp.Select) -> str | None:

@@ -144,9 +144,7 @@ def test_country_column_type_matches_the_entity_mapping() -> None:
         and statement.find(sqlglot.exp.Table).name == "customers"
     )
     country = next(
-        column
-        for column in customers.find_all(sqlglot.exp.ColumnDef)
-        if column.name == "country"
+        column for column in customers.find_all(sqlglot.exp.ColumnDef) if column.name == "country"
     )
 
     assert country.kind.this is sqlglot.exp.DataType.Type.VARCHAR
@@ -188,9 +186,7 @@ def test_datasource_is_routed_through_p6spy() -> None:
     properties = PROPERTIES.read_text(encoding="utf-8")
 
     assert "spring.datasource.url=jdbc:p6spy:postgresql://" in properties
-    assert (
-        "spring.datasource.driver-class-name=com.p6spy.engine.spy.P6SpyDriver" in properties
-    )
+    assert "spring.datasource.driver-class-name=com.p6spy.engine.spy.P6SpyDriver" in properties
 
 
 def test_spy_properties_format_matches_what_the_parser_expects() -> None:
@@ -203,8 +199,7 @@ def test_spy_properties_format_matches_what_the_parser_expects() -> None:
 
     assert "driverlist=org.postgresql.Driver" in spy
     assert (
-        "customLogMessageFormat=%(currentTime)|%(executionTime)|%(category)|%(sqlSingleLine)"
-        in spy
+        "customLogMessageFormat=%(currentTime)|%(executionTime)|%(category)|%(sqlSingleLine)" in spy
     )
     assert p6spy._FIELD_COUNT == 4
 

@@ -51,12 +51,8 @@ def test_suggests_a_usable_create_index_statement(
             "SELECT id FROM customers WHERE signed_up_at > '2024-01-01'",
             id="false-positive-guard-indexed-signed-up-at",
         ),
-        pytest.param(
-            "SELECT id FROM customers WHERE email = 'a@b.c'", id="indexed-unique-email"
-        ),
-        pytest.param(
-            "SELECT id FROM orders WHERE customer_id = 1", id="indexed-customer-id"
-        ),
+        pytest.param("SELECT id FROM customers WHERE email = 'a@b.c'", id="indexed-unique-email"),
+        pytest.param("SELECT id FROM orders WHERE customer_id = 1", id="indexed-customer-id"),
         pytest.param(
             "SELECT id FROM orders WHERE status = 'NEW' AND placed_at > '2024-01-01'",
             id="both-predicates-indexed",
@@ -99,9 +95,7 @@ def test_does_not_flag_a_column_wrapped_in_a_function(
     # adding an index on `country` would not make it faster. Reporting it here too
     # would put two findings with contradictory fixes on one predicate.
     findings = UnindexedFilterRule().check(
-        make_context(
-            "SELECT id FROM customers WHERE LOWER(country) = 'us'", schema=sandbox_schema
-        )
+        make_context("SELECT id FROM customers WHERE LOWER(country) = 'us'", schema=sandbox_schema)
     )
 
     assert findings == []

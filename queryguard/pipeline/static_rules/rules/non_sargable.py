@@ -17,6 +17,15 @@ __all__ = ["NonSargableRule"]
 
 _COMPARISONS = (exp.EQ, exp.NEQ, exp.GT, exp.GTE, exp.LT, exp.LTE, exp.In, exp.Between)
 
+#: The subset an implicit cast can hide in: a range comparison against a text column
+#: is a different smell, handled as non-sargable rather than as a cast.
+#:
+#: Annotated so ``find_all`` yields ``Expression``. Given several types it resolves to
+#: their nearest common base — for these two, ``Binary``, which sits beside
+#: ``Expression`` rather than under it and declares no ``args``, so the node could not
+#: be handed to a helper that reads them.
+_EQUALITY_COMPARISONS: tuple[type[exp.Expression], ...] = (exp.EQ, exp.NEQ)
+
 #: Types that a numeric literal will not silently coerce into usefully.
 _TEXT_TYPES = ("char", "text", "varchar", "citext", "uuid")
 
@@ -47,9 +56,7 @@ class NonSargableRule:
         findings.extend(self._casts_on_columns(context, where))
         return findings
 
-    def _leading_wildcards(
-        self, context: RuleContext, where: exp.Expression
-    ) -> list[Finding]:
+    def _leading_wildcards(self, context: RuleContext, where: exp.Expression) -> list[Finding]:
         findings: list[Finding] = []
         for like in where.find_all(exp.Like, exp.ILike):
             if not isinstance(like.this, exp.Column):
@@ -93,9 +100,7 @@ class NonSargableRule:
             )
         return findings
 
-    def _wrapped_columns(
-        self, context: RuleContext, where: exp.Expression
-    ) -> list[Finding]:
+    def _wrapped_columns(self, context: RuleContext, where: exp.Expression) -> list[Finding]:
         findings: list[Finding] = []
         seen: set[str] = set()
 
@@ -147,9 +152,7 @@ class NonSargableRule:
                 )
         return findings
 
-    def _casts_on_columns(
-        self, context: RuleContext, where: exp.Expression
-    ) -> list[Finding]:
+    def _casts_on_columns(self, context: RuleContext, where: exp.Expression) -> list[Finding]:
         findings: list[Finding] = []
 
         for comparison in where.find_all(*_COMPARISONS):
@@ -162,9 +165,7 @@ class NonSargableRule:
         findings.extend(self._implicit_casts(context, where))
         return findings
 
-    def _implicit_casts(
-        self, context: RuleContext, where: exp.Expression
-    ) -> list[Finding]:
+    def _implicit_casts(self, context: RuleContext, where: exp.Expression) -> list[Finding]:
         """Text column compared to a numeric literal — a cast the author did not write.
 
         Needs the schema to know the column's type, so this is silent under the stub
@@ -174,7 +175,7 @@ class NonSargableRule:
         findings: list[Finding] = []
         aliases = _table_aliases(context.ast)
 
-        for comparison in where.find_all(exp.EQ, exp.NEQ):
+        for comparison in where.find_all(*_EQUALITY_COMPARISONS):
             column, literal = _column_and_literal(comparison)
             if column is None or literal is None or literal.is_string:
                 continue
@@ -187,9 +188,7 @@ class NonSargableRule:
             if declared is None or not declared.startswith(_TEXT_TYPES):
                 continue
 
-            findings.append(
-                self._cast_finding(context, column, declared, explicit=False)
-            )
+            findings.append(self._cast_finding(context, column, declared, explicit=False))
         return findings
 
     def _cast_finding(

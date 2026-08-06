@@ -14,7 +14,7 @@ from typing import Any
 from queryguard.models.finding import Finding
 from queryguard.models.query import ExtractedQuery
 
-__all__ = ["explain_analyze", "analyze_plan"]
+__all__ = ["analyze_plan", "explain_analyze"]
 
 
 def explain_analyze(connection: Any, query: ExtractedQuery) -> dict[str, Any]:

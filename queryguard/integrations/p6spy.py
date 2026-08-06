@@ -18,15 +18,15 @@ from __future__ import annotations
 from collections import defaultdict
 
 import sqlglot
-from sqlglot import exp
 from pydantic import BaseModel, Field
+from sqlglot import exp
 
 __all__ = [
     "Statement",
     "StatementGroup",
+    "find_repeated_statements",
     "normalize_sql",
     "parse_statement_log",
-    "find_repeated_statements",
 ]
 
 #: Categories worth analysing. `result`/`resultset` are one line per returned row

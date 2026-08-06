@@ -37,10 +37,11 @@ from queryguard.pipeline.static_rules.schema import (
 )
 
 __all__ = [
+    "RULES",
+    "UNKNOWN_SCHEMA",
     "MissingWhereRule",
     "NoLimitRule",
     "NonSargableRule",
-    "RULES",
     "Rule",
     "RuleContext",
     "RuleEngine",
@@ -48,7 +49,6 @@ __all__ = [
     "SelectStarRule",
     "StaticSchemaProvider",
     "TableSchema",
-    "UNKNOWN_SCHEMA",
     "UnindexedFilterRule",
     "register",
     "run_static_rules",

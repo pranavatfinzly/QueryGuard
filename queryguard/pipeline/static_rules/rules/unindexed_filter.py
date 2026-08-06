@@ -12,7 +12,13 @@ __all__ = ["UnindexedFilterRule"]
 #: Predicate types an index can serve. A column appearing anywhere else in the
 #: WHERE clause (inside a function call, say) is not an indexable predicate and is
 #: the business of NonSargableRule instead.
-_INDEXABLE_PREDICATES = (
+#:
+#: Annotated rather than inferred so that ``find_all(*_INDEXABLE_PREDICATES)`` yields
+#: ``Expression``. sqlglot's ``find_all`` is generic in the types passed to it, and
+#: with several it resolves to their nearest common base — ``Condition``, which sits
+#: beside ``Expression`` rather than under it and declares no ``args``. Every node
+#: matched here is an ``Expression`` at runtime; this is what says so statically.
+_INDEXABLE_PREDICATES: tuple[type[exp.Expression], ...] = (
     exp.EQ,
     exp.NEQ,
     exp.GT,
@@ -152,8 +158,7 @@ class UnindexedFilterRule:
                         f"path. The index-simulation stage can measure the actual cost "
                         f"change with HypoPG before anyone commits to it."
                     ),
-                    sql=f"CREATE INDEX idx_{table.lower()}_{column.lower()} "
-                    f"ON {table} ({column});",
+                    sql=f"CREATE INDEX idx_{table.lower()}_{column.lower()} ON {table} ({column});",
                 )
             ],
         )
