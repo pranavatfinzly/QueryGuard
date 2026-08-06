@@ -129,7 +129,7 @@ def analyze(
     to a request whose input was never read is the one failure mode a review bot
     cannot have.
     """
-    if request.diff is not None:
+    if request.diff is not None and request.diff.strip():
         raise HTTPException(
             status_code=status.HTTP_501_NOT_IMPLEMENTED,
             detail="Analyzing a diff is not implemented yet. Supply the SQL directly "
