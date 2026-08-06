@@ -11,20 +11,40 @@ Finding`` without caring which module a model happens to live in; the split into
 from __future__ import annotations
 
 from queryguard.models.base import Contract
+from queryguard.models.diff import (
+    ChangedFile,
+    ChangeStatus,
+    DiffIngest,
+    SkippedFile,
+    SkipReason,
+)
 from queryguard.models.finding import Evidence, Finding, Severity, Suggestion
-from queryguard.models.query import ExtractedQuery, Provenance, QueryKind, SourceFile, SqlSource
+from queryguard.models.query import (
+    ExtractedQuery,
+    Hunk,
+    Provenance,
+    QueryKind,
+    SourceFile,
+    SqlSource,
+)
 from queryguard.models.report import Report, RunContext
 
 __all__ = [
+    "ChangeStatus",
+    "ChangedFile",
     "Contract",
+    "DiffIngest",
     "Evidence",
     "ExtractedQuery",
     "Finding",
+    "Hunk",
     "Provenance",
     "QueryKind",
     "Report",
     "RunContext",
     "Severity",
+    "SkipReason",
+    "SkippedFile",
     "SourceFile",
     "SqlSource",
     "Suggestion",

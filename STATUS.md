@@ -35,9 +35,9 @@ tested.
 | **Current focus** | Report rendering (stage 8) and the diff dispatcher (stage 2), which together turn the working static path into a real PR comment |
 | **Repository health** | Good. Lint, format, and strict typecheck all pass with **no quarantined error codes**; every test passes; no failing or skipped tests; no Docker, JDK, or credentials needed to run the suite |
 | **Production readiness** | **Not production ready.** No stage touches a database, no PR is ever read, no comment is ever posted. Usable today only as a library and a local HTTP service for sources you hand it directly |
-| **Number of tests** | **384** |
-| **Number of passing tests** | **384** (0 failed, 0 skipped, 0 xfail; 0.69 s wall clock) |
-| **Known technical debt** | 12 items tracked below — 2 High, 6 Medium, 4 Low. Three items (TD-4, TD-6, TD-10) were closed this milestone; two (TD-14, TD-15) are newly *named* rather than newly incurred — both were already true and undocumented |
+| **Number of tests** | **470** |
+| **Number of passing tests** | **470** (0 failed, 0 skipped, 0 xfail; 2.1 s wall clock — the configuration suite spawns subprocesses to test import-time failure) |
+| **Known technical debt** | 11 items tracked below — 2 High, 5 Medium, 4 Low. TD-4, TD-6 and TD-10 closed in the hardening pass; TD-9 closed by `config.py` |
 
 ### The one-sentence summary
 
@@ -60,7 +60,7 @@ read a pull request, execute anything against a database, or post a comment.
 | 5. Execution Plan Analysis | 🔴 Not Started | 0% | `pipeline/explain.py` — both `explain_analyze` and `analyze_plan` raise. `analyze_plan` is deliberately shaped to take plan JSON as data so it can be unit-tested offline; no `tests/fixtures/plans/` corpus exists yet. |
 | 6. HypoPG | 🔴 Not Started | 0% | `pipeline/hypopg.py::simulate_indexes` raises. `Suggestion.cost_before` / `cost_after` fields exist and are unused. |
 | 7. N+1 Detection | 🔴 Not Started | 0% | `pipeline/nplusone.py::detect_n_plus_one` raises. Its evidence input (`p6spy`) is implemented and its signature already accepts it — see the supporting table. |
-| 8. Report Rendering | 🔴 Not Started | ~15% | `pipeline/report.py` — `rank_findings` and `render_markdown` both raise. Severity ranking *is* implemented, but inside `RuleEngine.analyze`, not here. No Markdown is produced anywhere. |
+| 8. Report Rendering | 🟡 Partial | ~70% | `render_markdown` is **implemented**: a pure function of `Report`, marker-first, findings grouped by severity worst-first, with degraded stages and unparseable queries as named sections above the findings. Five snapshots in `tests/fixtures/reports/`, 43 tests. `rank_findings` still raises — ranking lives in `RuleEngine.analyze`, and merging the two is a deliberate open question. Nothing posts the Markdown yet. |
 | 9. GitHub Integration | 🔴 Not Started | ~5% | `integrations/github.py` — all three functions raise. Only `COMMENT_MARKER` (`<!-- queryguard:report -->`) is real, and is pinned by a test. |
 | 10. Claude Integration | 🔴 Not Started | ~5% | `integrations/claude.py::request_findings` raises. Only `MODEL = "claude-opus-5"` is real, and is pinned by a test. No `anthropic` client is ever constructed. |
 
@@ -79,7 +79,7 @@ read a pull request, execute anything against a database, or post a comment.
 | Sandbox fixture app (`queryguard-sandbox/`) | ✅ Complete | Spring Boot 3.5 / JDK 21, Flyway migration, deterministic seed, 4 planted bugs + 4 healthy counterparts, p6spy wired. 21 tests guard it. |
 | Structured logging | ✅ Complete for the wired stages | One INFO record per run carrying `run_id`, `repo`, `pr_number`, query/finding counts, `processing_time_ms`, `degraded_stages` — in both `extra` and the message text. |
 | Tooling config (`pyproject.toml`) | ✅ Complete | ruff (line length 100, 8 rule families) + mypy strict, with **no per-module error-code overrides**. |
-| Configuration (`config.py`) | 🔴 Not Started | Does not exist. Nothing reads `os.environ` anywhere yet, so the convention is currently satisfied by having no configuration at all. |
+| Configuration (`config.py`) | ✅ Complete for what exists | `Settings` (pydantic-settings, frozen), `GITHUB_TOKEN` required with a fail-fast import-time check, `ANTHROPIC_API_KEY` optional until the N+1 stage needs it. Secrets are `SecretStr` and the masked `__repr__` is tested against repr, str, f-string, `model_dump`, `model_dump_json`, and the startup error. A source-tree test asserts it is the **only** module that reads the environment. 44 tests. |
 | CLI (`cli.py`) | 🔴 Not Started | Does not exist. |
 | Java sidecar (`java-parser/`) | 🔴 Not Started | Does not exist. |
 | CI (`.github/workflows/`) | 🔴 Not Started | Does not exist. Lint/typecheck/test are enforced by hand only. |
@@ -340,7 +340,7 @@ the invariant was written for) is untested.
 
 **Modules that do not exist at all:**
 
-`queryguard/config.py`, `queryguard/cli.py`, `queryguard/api/routes/` (webhook
+`queryguard/cli.py`, `queryguard/api/routes/` (webhook
 signature verification, run status), `java-parser/`, `docker/`,
 `.github/workflows/ci.yml`, `.github/workflows/queryguard.yml`.
 
@@ -370,7 +370,7 @@ the HTTP surface.
 | TD-5 | Low | Stale documentation outside the code | CLAUDE.md's folder tree marks `rules/` as `(empty)` and `api/deps.py` as `TODO` (both exist), and omits `pipeline/runner.py`, `pyproject.toml`, and `docs/` entirely. Reduced, not closed: every docstring inside the code is now accurate. |
 | TD-7 | Medium | Dev tooling is not a declared dependency | `ruff` and `mypy` are required by CLAUDE.md and configured in `pyproject.toml`, but appear in neither `requirements.txt` nor any dev-requirements file. A fresh clone cannot run the checks the conventions mandate. |
 | TD-8 | Medium | No CI | `.github/workflows/` does not exist. Lint, typecheck, and tests pass only because someone ran them by hand; nothing prevents a regression from being committed. |
-| TD-9 | Medium | No configuration layer | `config.py` does not exist. Today that is fine — nothing reads `os.environ` anywhere — but the moment GitHub or Claude lands, the "config comes from `config.py` only, no secrets in logs" convention has to be honoured by a module that does not yet exist. |
+| TD-16 | Low | Import-time configuration check is a blunt instrument | `config.py` validates at import so a misconfigured deployment dies at startup rather than mid-run. The cost is that the traceback points at an `import` line rather than at whatever needed the value, and the check has to detect test runs to avoid making a token mandatory for `pytest`. `validate_required()` is the opt-in alternative; the API and CLI should call it explicitly once they have a startup hook. |
 | TD-11 | Low | Overlapping API tests | `test_api.py::test_analyze_returns_a_report` asserts `findings == []`, which now passes only because the request supplies no SQL. It reads like a claim about `/analyze` and is really a claim about the empty case, already covered better in `test_analyze_endpoint.py`. |
 | TD-12 | Low | No coverage measurement | `pytest-cov` is not installed or declared, so line/branch coverage is unknown. With 384 tests over ~1,800 lines of implementation it is likely high on the implemented paths, but that is an inference, not a number. |
 | TD-13 | Low | Line-ending churn, no `.gitattributes` | Git reports LF→CRLF conversion on 20 files on every status. Harmless today; noisy in diffs and a future source of spurious conflicts. |

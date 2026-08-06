@@ -1,5 +1,6 @@
 fastapi
 uvicorn
+pydantic-settings
 sqlglot
 psycopg2-binary
 anthropic
