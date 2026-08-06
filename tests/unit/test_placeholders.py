@@ -27,8 +27,6 @@ from queryguard.pipeline import (
 
 UNIMPLEMENTED: list[tuple[Callable[..., Any], tuple[Any, ...]]] = [
     (ingest.ingest_pull_request, ("acme/x", 1)),
-    (extract.extract_queries, ("",)),
-    (extract.extract_from_java, ("Repo.java", "")),
     (extract.parse_derived_method, ("findByCustomerId", "Order", "Repo.java")),
     (explain.explain_analyze, (None, None)),
     (explain.analyze_plan, (None, {})),

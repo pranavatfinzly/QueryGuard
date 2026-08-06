@@ -16,7 +16,7 @@ import pytest
 from queryguard.models import Finding, Severity, SqlSource
 from queryguard.models.query import ExtractedQuery
 from queryguard.pipeline import runner as runner_module
-from queryguard.pipeline.extract import extract_from_sql
+from queryguard.pipeline.extract import extract_queries
 from queryguard.pipeline.runner import STATIC_RULES_STAGE, AnalysisRunner
 from queryguard.pipeline.static_rules import RuleEngine
 
@@ -103,14 +103,14 @@ def test_an_extractor_that_raises_is_contained_to_its_source(
     raising, so the only way to reach the runner's catch-all — and prove it costs one
     source rather than the run — is to make the extractor fail outright.
     """
-    real_extract = extract_from_sql
+    real_extract = extract_queries
 
-    def explode(path: str, content: str, dialect: str = "postgres") -> list[ExtractedQuery]:
+    def explode(path: str, content: str) -> list[ExtractedQuery]:
         if path == "b.sql":
             raise RuntimeError("unexpected extractor failure")
-        return real_extract(path, content, dialect)
+        return real_extract(path, content)
 
-    monkeypatch.setattr("queryguard.pipeline.runner.extract_from_sql", explode)
+    monkeypatch.setattr("queryguard.pipeline.runner.extract_queries", explode)
 
     report = AnalysisRunner().run(
         repo="acme/billing-service",

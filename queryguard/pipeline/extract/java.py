@@ -1,26 +1,55 @@
-"""Stage 2 (Java) — JavaParser sidecar client.
-
-Walks Java sources for ``@Query`` annotations, ``createQuery`` /
-``createNativeQuery`` calls, and Spring Data repository method names.
-
-The sidecar only parses and emits JSON; all analysis stays here on the Python
-side so the rules have one home. Its JSON shape is a versioned contract —
-changing it means updating :mod:`queryguard.models.query` and the fixtures
-together.
-"""
+"""Stage 2 (Java) — narrow Spring Data JPQL annotation extraction."""
 
 from __future__ import annotations
 
-from queryguard.models.query import ExtractedQuery
+import re
 
-__all__ = ["extract_from_java"]
+from queryguard.models.query import ExtractedQuery, Provenance, QueryKind
+
+__all__ = ["extract_java"]
 
 
-def extract_from_java(path: str, content: str) -> list[ExtractedQuery]:
-    """Extract JPQL/HQL, native queries, and derived methods from a Java source.
+# This intentionally accepts only a single Java string literal or text block as the
+# sole annotation argument. In particular, named arguments, concatenation, and
+# ``nativeQuery = true`` do not match and remain work for later extraction stages.
+QUERY_ANNOTATION = re.compile(
+    r'''@Query\b\s*\(\s*(?:
+        "(?P<string>(?:\\.|[^"\\\r\n])*)"\s*\)
+        | """(?:\r\n|\n)(?P<text_block>.*?)"""\s*\)
+    )''',
+    re.DOTALL | re.VERBOSE,
+)
 
-    Repository method names are handed to
-    :func:`queryguard.pipeline.extract.derived.parse_derived_method` to recover
-    their query semantics.
+
+def extract_java(path: str, content: str) -> list[ExtractedQuery]:
+    """Extract JPQL from simple Spring Data ``@Query`` annotations.
+
+    The source is searched rather than parsed: malformed Java and annotations outside
+    this deliberately narrow shape simply produce no candidate. The JPQL itself is
+    kept verbatim and is not parsed or normalized here.
     """
-    raise NotImplementedError("extract.java.extract_from_java is not implemented yet")
+    queries: list[ExtractedQuery] = []
+
+    for match in QUERY_ANNOTATION.finditer(content):
+        text = match.group("string")
+        start = match.start("string")
+        if text is None:
+            text = match.group("text_block")
+            start = match.start("text_block")
+
+        if text is None or start == -1:
+            continue
+
+        queries.append(
+            ExtractedQuery(
+                id=f"{path}:{len(queries) + 1}",
+                kind=QueryKind.JPQL,
+                text=text,
+                provenance=Provenance(
+                    file=path,
+                    line=content.count("\n", 0, start) + 1,
+                ),
+            )
+        )
+
+    return queries

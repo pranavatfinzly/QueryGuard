@@ -30,8 +30,8 @@ tested.
 | **Current focus** | Report rendering (stage 8) and the diff dispatcher (stage 2), which together turn the working static path into a real PR comment |
 | **Repository health** | Good. Lint, format, and strict typecheck all pass; every test passes; no failing or skipped tests; no Docker, JDK, or credentials needed to run the suite |
 | **Production readiness** | **Not production ready.** No stage touches a database, no PR is ever read, no comment is ever posted. Usable today only as a library and a local HTTP service for SQL you hand it directly |
-| **Number of tests** | **227** |
-| **Number of passing tests** | **227** (0 failed, 0 skipped, 0 xfail; 0.59 s wall clock) |
+| **Number of tests** | **245** |
+| **Number of passing tests** | **245** (0 failed, 0 skipped, 0 xfail; 0.66 s wall clock) |
 | **Known technical debt** | 13 items tracked below — 2 High, 6 Medium, 5 Low. The two High items are both "the invariant is documented but nothing enforces it yet" |
 
 ### The one-sentence summary
@@ -49,7 +49,7 @@ database, or post a comment.
 | Stage | Status | Progress | Notes |
 | --- | --- | --- | --- |
 | 1. Ingest | 🔴 Not Started | 0% | `pipeline/ingest.py::ingest_pull_request` raises `NotImplementedError`. `RunContext` exists and carries `base_sha` / `head_sha` fields, but nothing populates them. |
-| 2. Query Extraction | 🟡 Partial | ~40% | **SQL is done** (`extract/sql.py`, 36 tests). Java (`extract/java.py`), Spring Data derived methods (`extract/derived.py`), and the per-file dispatcher (`extract/__init__.py::extract_queries`) are all stubs. `.sql`-shaped input only. |
+| 2. Query Extraction | 🟡 Partial | ~50% | **SQL is done** (`extract/sql.py`, 36 tests). `extract/dispatcher.py::extract_queries` routes `.sql` to SQL extraction and `.java` to narrow JPQL `@Query` extraction, always returning `list[ExtractedQuery]`. Native Java queries and Spring Data derived methods remain unimplemented. |
 | 3. Static Analysis | ✅ Complete | Stage machinery 100%; rule coverage 5 of 9 planned smells | `RuleEngine` + registry + schema-provider protocol + 5 rules, 92 tests. Deliberately not blocked on the remaining 4 smells — they are new files, not changes to the stage. |
 | 4. Database Provisioning | 🔴 Not Started | 0% | `db/provision.py::provision_reference_db` raises. No `docker/` directory, no schema snapshot, no HypoPG image. |
 | 5. Execution Plan Analysis | 🔴 Not Started | 0% | `pipeline/explain.py` — both `explain_analyze` and `analyze_plan` raise. `analyze_plan` is deliberately shaped to take plan JSON as data so it can be unit-tested offline; no `tests/fixtures/plans/` corpus exists yet. |
@@ -231,24 +231,31 @@ pre-existing debt quarantined by exact error code; see debt item TD-6).
 
 ### Query extraction (stage 2) — the SQL third of three
 
+`pipeline/extract/dispatcher.py::extract_queries(path, content)` is now the single
+per-file extraction entry point. It selects the SQL extractor for `.sql`, narrow JPQL
+`@Query` extraction for `.java`, and returns an empty `list[ExtractedQuery]` for every
+other extension. It contains no parsing logic; downstream stages continue to consume
+only `ExtractedQuery` objects.
+
 | Piece | State |
 | --- | --- |
 | `extract_from_sql` | ✅ Finished, 36 tests |
-| `extract_from_java` | 🔴 Stub |
+| `extract_java` | 🟡 Simple JPQL `@Query` annotations and text blocks |
 | `parse_derived_method` | 🔴 Stub |
-| `extract_queries` (the diff dispatcher) | 🔴 Stub |
+| `extract_queries` (per-file dispatcher) | ✅ Routes `.sql` and `.java` |
 
 **Finished:** everything needed to turn a `.sql` file or a SQL snippet into
 `ExtractedQuery` objects with accurate provenance.
 
-**Remaining:** the JavaParser sidecar does not exist, so `@Query` annotations,
-`createQuery` / `createNativeQuery` calls, and repository method names are invisible.
+**Remaining:** Java extraction recognizes only a single string literal or text block
+as the sole `@Query` argument. Native queries, `createQuery` /
+`createNativeQuery` calls, named queries, concatenation, variables, and repository
+method names remain invisible.
 `parse_derived_method` has a documented design constraint but no body — and it is the
 harder half, because the SQL a derived method emits is often *not* what the name
 suggests (`findByCustomerId` on a `@ManyToOne` compiles to a join filtered on the
-parent's primary key, not `orders.customer_id = ?`). The dispatcher that routes a
-changed file to the right extractor is also a stub, which is why `POST /analyze`
-returns 501 for `diff`.
+parent's primary key, not `orders.customer_id = ?`). Diff parsing is still absent,
+which is why `POST /analyze` returns 501 for `diff`.
 
 **Consequence:** QueryGuard's stated input is a pull request. Its actual input today
 is SQL you hand it directly.

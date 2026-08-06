@@ -9,7 +9,7 @@ shaping.
 
 Wired today, in run order:
 
-1. **Extract** — :func:`queryguard.pipeline.extract.extract_from_sql` per source.
+1. **Extract** — :func:`queryguard.pipeline.extract.extract_queries` per source.
 2. **Static analysis** — :class:`~queryguard.pipeline.static_rules.RuleEngine` over
    everything extract produced.
 
@@ -34,7 +34,7 @@ from collections.abc import Sequence
 from queryguard.models.finding import Finding
 from queryguard.models.query import ExtractedQuery, SqlSource
 from queryguard.models.report import Report, RunContext
-from queryguard.pipeline.extract import extract_from_sql
+from queryguard.pipeline.extract import extract_queries
 from queryguard.pipeline.static_rules import RuleEngine
 
 __all__ = ["EXTRACT_STAGE", "STATIC_RULES_STAGE", "AnalysisRunner"]
@@ -140,7 +140,7 @@ class AnalysisRunner:
             # spellings of the same marker.
             marker = f"{EXTRACT_STAGE}:{source.path}"
             try:
-                extracted = extract_from_sql(source.path, source.content, dialect=source.dialect)
+                extracted = extract_queries(source.path, source.content)
             except Exception:
                 # Stage boundary. The extractor already turns malformed SQL into an
                 # unanalyzable candidate, so reaching here means something genuinely

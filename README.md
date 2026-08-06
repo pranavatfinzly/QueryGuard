@@ -47,6 +47,8 @@ which half you get today.
 - **SQL extraction** — every statement in a `.sql` file, migration, or snippet,
   parsed with `sqlglot`. Semicolons inside string literals and dollar-quoted function
   bodies are correctly not treated as boundaries.
+- **JPQL `@Query` extraction** — simple Spring Data JPA annotations in Java classes
+  and interfaces, including text blocks, preserve their source text and provenance.
 - **Accurate provenance** — every query carries `file:line`, resolved from token
   positions, so a finding anchors to the statement rather than the top of the file.
 - **Five static rules** — unqualified writes, unbounded scans, unindexed filters,
@@ -70,7 +72,8 @@ which half you get today.
 ### Coming soon
 
 - **Pull-request ingest** — read the diff from GitHub instead of being handed SQL.
-- **Java / JPA extraction** — `@Query` annotations, `createNativeQuery`, JPQL/HQL.
+- **Further Java / JPA extraction** — native queries, `EntityManager` and `Session`
+  calls, named queries, and other unsupported annotation forms.
 - **Spring Data derived methods** — decoding `findByCustomerIdAndStatusOrderBy…` into
   the query it actually emits.
 - **Execution plan analysis** — `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)` on an
@@ -84,12 +87,18 @@ which half you get today.
 - **Four more static rules** — deep `OFFSET` paging, `IN` lists that should be joins,
   cartesian products, derived-method fan-out.
 
-Nothing in "Coming soon" exists yet. Stage entry points for each are present and raise
-`NotImplementedError`.
+Only the listed available features are implemented; remaining milestones are not
+silently approximated.
 
 ---
 
 ## Architecture
+
+Extraction has one source-language boundary: `extract_queries(path, content)`. It
+routes `.sql` files to the SQL extractor and `.java` files to narrow JPQL `@Query`
+extraction.
+every route returns `list[ExtractedQuery]`, so analysis does not depend on the source
+language.
 
 A linear pipeline; each stage consumes the previous stage's typed output.
 
