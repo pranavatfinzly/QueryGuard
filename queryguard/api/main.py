@@ -23,7 +23,7 @@ from fastapi import Depends, FastAPI, HTTPException, status
 from pydantic import BaseModel, Field
 
 from queryguard.api.deps import get_analysis_runner
-from queryguard.models import Report, SqlSource
+from queryguard.models import Report, SourceFile, SqlSource
 from queryguard.pipeline.runner import AnalysisRunner
 
 #: Provenance path recorded for SQL passed inline as ``sql``, which has no file of
@@ -41,9 +41,10 @@ app = FastAPI(
 class AnalyzeRequest(BaseModel):
     """Input to a review run.
 
-    Supply the SQL directly — as ``sql`` for a single snippet, or as ``sql_files``
-    for several named sources — to analyze it without calling GitHub. This is the
-    path local runs and tests use.
+    Supply the sources directly — ``sql`` for a single snippet, ``sql_files`` for
+    several named SQL sources, ``sources`` for anything the extract stage can
+    route by extension — to analyze them without calling GitHub. This is the path
+    local runs and tests use.
     """
 
     repo: str = Field(description='Owner/name, e.g. "acme/billing-service".')
@@ -57,6 +58,12 @@ class AnalyzeRequest(BaseModel):
         default_factory=list,
         description="Named SQL sources. Each is extracted independently, so one "
         "file that cannot be parsed does not cost the others.",
+    )
+    sources: list[SourceFile] = Field(
+        default_factory=list,
+        description="Named sources in any language the extract stage supports, "
+        "routed by file extension (`.sql`, `.java`). Use `sql_files` instead when "
+        "a source needs a non-default SQL dialect. Analyzed after `sql_files`.",
     )
     diff: str | None = Field(
         default=None,
@@ -74,6 +81,17 @@ class AnalyzeRequest(BaseModel):
         if self.sql is None:
             return self.sql_files
         return [SqlSource(path=INLINE_SQL_PATH, content=self.sql), *self.sql_files]
+
+    def analysis_sources(self) -> list[SourceFile]:
+        """Every source this request carries, in the order they are analyzed.
+
+        The extract stage routes by extension and returns ``ExtractedQuery``
+        whatever the language, so the route has no reason to know which of these
+        are SQL. ``sql_files`` stays a separate field only because it is typed as
+        :class:`~queryguard.models.query.SqlSource` and can therefore carry a
+        dialect; both lists reach the same stage by the same path.
+        """
+        return [*self.sql_sources(), *self.sources]
 
 
 class AnalyzeResponse(BaseModel):
@@ -145,6 +163,6 @@ def analyze(
     report = runner.run(
         repo=request.repo,
         pr_number=request.pr_number,
-        sources=request.sql_sources(),
+        sources=request.analysis_sources(),
     )
     return AnalyzeResponse.from_report(report)

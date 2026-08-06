@@ -23,6 +23,17 @@ from sqlglot import exp
 
 from queryguard.models.finding import Finding, Severity, Suggestion
 from queryguard.models.query import ExtractedQuery
+
+# Re-exported rather than moved-and-forgotten: the AST readings live in
+# `ast_helpers` (see that module for why), but every rule already imports them
+# from here and there is no reason to make a rule author care which of the two
+# files a helper is defined in.
+from queryguard.pipeline.static_rules.ast_helpers import (
+    clause,
+    has_clause,
+    resolve_table,
+    table_aliases,
+)
 from queryguard.pipeline.static_rules.schema import (
     UNKNOWN_SCHEMA,
     SchemaProvider,
@@ -35,35 +46,10 @@ __all__ = [
     "clause",
     "has_clause",
     "register",
+    "resolve_table",
     "run_static_rules",
+    "table_aliases",
 ]
-
-
-def has_clause(node: exp.Expression, *keys: str) -> bool:
-    """Whether a statement carries any of these clauses.
-
-    Presence is tested by truthiness, not ``is not None``, because sqlglot marks an
-    absent clause inconsistently: ``None`` in most slots but ``False`` in others —
-    ``Delete.args["using"]`` is ``False`` for a plain ``DELETE``. An ``is not None``
-    check reads as correct and silently treats every bare DELETE as scoped.
-
-    Truthiness is safe here: ``exp.Expression`` defines neither ``__bool__`` nor
-    ``__len__``, so a real clause node is always truthy.
-    """
-    return any(bool(node.args.get(key)) for key in keys)
-
-
-def clause(node: exp.Expression, *keys: str) -> exp.Expression | None:
-    """The first of these clauses present on a statement, as a node.
-
-    Accepts several keys because sqlglot renames arg keys across versions — a
-    ``SELECT``'s FROM clause is ``from_`` in 30.x and ``from`` before it.
-    """
-    for key in keys:
-        value = node.args.get(key)
-        if isinstance(value, exp.Expression):
-            return value
-    return None
 
 
 @dataclass(frozen=True)
@@ -121,7 +107,19 @@ def register(rule: Rule) -> Rule:
     Takes an instance, not a class: the :class:`Rule` protocol requires a bound
     ``check``, and a class object would satisfy the attribute check while failing
     at call time.
+
+    A duplicate ``rule_id`` is rejected, matching
+    :class:`~queryguard.pipeline.extract.registry.ExtractorRegistry` — the two
+    extension points of this pipeline should behave the same way when misused.
+    Registration is an import side effect, so the failure mode being closed here
+    is a rule registered twice by two import paths, whose only symptom would be
+    every one of its findings appearing twice in the PR comment.
     """
+    duplicate = next((existing for existing in RULES if existing.rule_id == rule.rule_id), None)
+    if duplicate is not None:
+        msg = f"a rule is already registered with rule_id {rule.rule_id!r}"
+        raise ValueError(msg)
+
     RULES.append(rule)
     return rule
 
@@ -132,8 +130,12 @@ def run_static_rules(
 ) -> list[Finding]:
     """Run every registered rule over every parseable query.
 
-    Thin wrapper over :class:`~queryguard.pipeline.static_rules.engine.RuleEngine`,
-    kept because it is the stage entry point the pipeline and the API wiring name.
+    A one-call convenience over
+    :class:`~queryguard.pipeline.static_rules.engine.RuleEngine`, for a caller
+    with a query list and no reason to hold an engine — a script, a notebook, a
+    test. The pipeline itself constructs the engine directly, because it reuses
+    one across runs and injects the rule set; routing it through here would mean
+    building an engine per run and losing that seam.
     """
     # Imported here: engine imports this module for RuleContext, so a module-level
     # import would be circular.

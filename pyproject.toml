@@ -44,21 +44,3 @@ python_version = "3.11"
 # refuses to start: "Duplicate module named conftest".
 explicit_package_bases = true
 mypy_path = "."
-
-# Pre-existing debt, quarantined by exact error code rather than by blanket-ignoring
-# the files, so anything *else* that breaks in them is still caught — and so the list
-# only ever shrinks. None of these are in shipped code.
-#
-#   test_sandbox_fixtures  — indexes into sqlglot Optional results without narrowing
-#   test_placeholders      — asserts Severity.CRITICAL == "critical"; true at runtime
-#                            for a str enum, but mypy reads it as a non-overlapping
-#                            comparison against the Literal member type
-#   static_rules/conftest  — hands `sqlglot.parse_one`'s wider `Expr` to a parameter
-#                            declared `Expression` (the same split fixed in engine.py)
-[[tool.mypy.overrides]]
-module = [
-    "tests.unit.test_sandbox_fixtures",
-    "tests.unit.test_placeholders",
-    "tests.unit.static_rules.conftest",
-]
-disable_error_code = ["union-attr", "comparison-overlap", "arg-type"]

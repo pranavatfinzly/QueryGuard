@@ -11,7 +11,13 @@ from __future__ import annotations
 from sqlglot import exp
 
 from queryguard.models.finding import Finding, Severity, Suggestion
-from queryguard.pipeline.static_rules.base import RuleContext, clause, register
+from queryguard.pipeline.static_rules.base import (
+    RuleContext,
+    clause,
+    register,
+    resolve_table,
+    table_aliases,
+)
 
 __all__ = ["NonSargableRule"]
 
@@ -173,14 +179,14 @@ class NonSargableRule:
         text to see here; the coercion is inserted by the database.
         """
         findings: list[Finding] = []
-        aliases = _table_aliases(context.ast)
+        aliases = table_aliases(context.ast)
 
         for comparison in where.find_all(*_EQUALITY_COMPARISONS):
             column, literal = _column_and_literal(comparison)
             if column is None or literal is None or literal.is_string:
                 continue
 
-            table = _resolve_table(column, aliases)
+            table = resolve_table(column, aliases)
             if table is None:
                 continue
 
@@ -234,22 +240,6 @@ class NonSargableRule:
                 )
             ],
         )
-
-
-def _table_aliases(node: exp.Expression) -> dict[str, str]:
-    aliases: dict[str, str] = {}
-    for table in node.find_all(exp.Table):
-        aliases[table.name.lower()] = table.name
-        if table.alias:
-            aliases[table.alias.lower()] = table.name
-    return aliases
-
-
-def _resolve_table(column: exp.Column, aliases: dict[str, str]) -> str | None:
-    if column.table:
-        return aliases.get(column.table.lower())
-    distinct = set(aliases.values())
-    return next(iter(distinct)) if len(distinct) == 1 else None
 
 
 def _column_and_literal(

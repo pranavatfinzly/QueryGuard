@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import Field
 
+from queryguard.models.base import Contract
 from queryguard.models.finding import Finding
 from queryguard.models.query import ExtractedQuery
 
 
-class RunContext(BaseModel):
+class RunContext(Contract):
     """Identifies the PR under analysis and the run itself."""
 
     run_id: str
@@ -18,7 +19,7 @@ class RunContext(BaseModel):
     head_sha: str | None = None
 
 
-class Report(BaseModel):
+class Report(Contract):
     """Merged output of every stage; input to the Markdown renderer."""
 
     context: RunContext

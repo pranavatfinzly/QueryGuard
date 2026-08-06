@@ -38,11 +38,13 @@ def make_context() -> Callable[..., RuleContext]:
             dialect=dialect,
             provenance=Provenance(file="Repo.java", line=42),
         )
-        return RuleContext(
-            query=query,
-            ast=sqlglot.parse_one(sql, read=dialect),
-            schema=schema,
-        )
+        # `parse_one` is declared to return the wider `Expr`; `RuleContext` wants an
+        # `Expression`. Narrowed here rather than ignored, which is the same split
+        # the engine resolves in `RuleEngine._parse`.
+        ast = sqlglot.parse_one(sql, read=dialect)
+        assert isinstance(ast, sqlglot.exp.Expression)
+
+        return RuleContext(query=query, ast=ast, schema=schema)
 
     return _make
 

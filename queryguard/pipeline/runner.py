@@ -9,7 +9,7 @@ shaping.
 
 Wired today, in run order:
 
-1. **Extract** — :func:`queryguard.pipeline.extract.extract_queries` per source.
+1. **Extract** — :func:`queryguard.pipeline.extract.extract_source` per source.
 2. **Static analysis** — :class:`~queryguard.pipeline.static_rules.RuleEngine` over
    everything extract produced.
 
@@ -32,9 +32,9 @@ import uuid
 from collections.abc import Sequence
 
 from queryguard.models.finding import Finding
-from queryguard.models.query import ExtractedQuery, SqlSource
+from queryguard.models.query import ExtractedQuery, SourceFile
 from queryguard.models.report import Report, RunContext
-from queryguard.pipeline.extract import extract_queries
+from queryguard.pipeline.extract import extract_source
 from queryguard.pipeline.static_rules import RuleEngine
 
 __all__ = ["EXTRACT_STAGE", "STATIC_RULES_STAGE", "AnalysisRunner"]
@@ -73,7 +73,7 @@ class AnalysisRunner:
         *,
         repo: str,
         pr_number: int,
-        sources: Sequence[SqlSource],
+        sources: Sequence[SourceFile],
         run_id: str | None = None,
     ) -> Report:
         """Extract queries from ``sources``, apply the static rules, and report.
@@ -123,7 +123,7 @@ class AnalysisRunner:
         )
 
     def _extract(
-        self, context: RunContext, sources: Sequence[SqlSource]
+        self, context: RunContext, sources: Sequence[SourceFile]
     ) -> tuple[list[ExtractedQuery], list[str]]:
         """Stage 2, one source at a time so a bad source costs only itself.
 
@@ -140,7 +140,10 @@ class AnalysisRunner:
             # spellings of the same marker.
             marker = f"{EXTRACT_STAGE}:{source.path}"
             try:
-                extracted = extract_queries(source.path, source.content)
+                # The whole model, not `(path, content)`: a source may carry
+                # options its extractor needs — `SqlSource.dialect` is one — and
+                # unpacking it here would silently drop them.
+                extracted = extract_source(source)
             except Exception:
                 # Stage boundary. The extractor already turns malformed SQL into an
                 # unanalyzable candidate, so reaching here means something genuinely

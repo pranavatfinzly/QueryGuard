@@ -2,13 +2,18 @@
 
 **Last Updated:** 2026-08-06
 **Repository Version:** 0.1.0 (`queryguard/__init__.py`, `app.version`)
-**Branch:** `restructure-pipeline-and-wire-p6spy`
-**Commit:** `df1bd3c` — *restructured pipeline*
-**Working tree:** dirty — 22 tracked files modified, 7 untracked. The pipeline
-orchestrator (`queryguard/pipeline/runner.py`), the DI module
-(`queryguard/api/deps.py`), `pyproject.toml`, and four test modules described below
-are **not yet committed**. Everything in this document reflects the working tree, not
-`df1bd3c`.
+**Branch:** `feature/java-extraction`
+**Commit:** `1c5e258` — *chore(git): ignore local Claude settings*
+**Working tree:** dirty — 26 tracked files modified, 11 untracked: six modules
+(`docs/architecture.md`, `models/base.py`, `extract/base.py`, `extract/registry.py`,
+`extract/java_source.py`, `static_rules/ast_helpers.py`) and five test modules
+(`test_java_source.py`, `test_model_contracts.py`, `test_derived_extraction.py`,
+`test_extractor_registry.py`, `test_source_file.py`). Everything in this document
+reflects the working tree, not `1c5e258`.
+
+**Last change:** an architecture hardening sprint — no new capability, three
+extraction defects closed, and the extract stage rebuilt around an open/closed
+extension point. See the Changelog.
 
 ---
 
@@ -26,21 +31,21 @@ tested.
 
 | Dimension | State |
 | --- | --- |
-| **Current milestone** | *Wire the implemented stages end to end behind `POST /analyze`* — **complete** |
+| **Current milestone** | *Architecture hardening — make extraction extensible and the contracts immutable* — **complete** |
 | **Current focus** | Report rendering (stage 8) and the diff dispatcher (stage 2), which together turn the working static path into a real PR comment |
-| **Repository health** | Good. Lint, format, and strict typecheck all pass; every test passes; no failing or skipped tests; no Docker, JDK, or credentials needed to run the suite |
-| **Production readiness** | **Not production ready.** No stage touches a database, no PR is ever read, no comment is ever posted. Usable today only as a library and a local HTTP service for SQL you hand it directly |
-| **Number of tests** | **245** |
-| **Number of passing tests** | **245** (0 failed, 0 skipped, 0 xfail; 0.66 s wall clock) |
-| **Known technical debt** | 13 items tracked below — 2 High, 6 Medium, 5 Low. The two High items are both "the invariant is documented but nothing enforces it yet" |
+| **Repository health** | Good. Lint, format, and strict typecheck all pass with **no quarantined error codes**; every test passes; no failing or skipped tests; no Docker, JDK, or credentials needed to run the suite |
+| **Production readiness** | **Not production ready.** No stage touches a database, no PR is ever read, no comment is ever posted. Usable today only as a library and a local HTTP service for sources you hand it directly |
+| **Number of tests** | **384** |
+| **Number of passing tests** | **384** (0 failed, 0 skipped, 0 xfail; 0.69 s wall clock) |
+| **Known technical debt** | 12 items tracked below — 2 High, 6 Medium, 4 Low. Three items (TD-4, TD-6, TD-10) were closed this milestone; two (TD-14, TD-15) are newly *named* rather than newly incurred — both were already true and undocumented |
 
 ### The one-sentence summary
 
-QueryGuard can today take SQL, extract every statement from it with correct
-provenance, run five deterministic rules over the parsed ASTs, and return a ranked,
-JSON-serializable report over HTTP — fail-soft, deterministically, and
-concurrency-safe. It cannot yet read a pull request, execute anything against a
-database, or post a comment.
+QueryGuard can today take SQL and Java sources, extract every statement, `@Query`
+annotation, and supported derived method from them with correct provenance, run five
+deterministic rules over the parsed ASTs, and return a ranked, JSON-serializable
+report over HTTP — fail-soft, deterministically, and concurrency-safe. It cannot yet
+read a pull request, execute anything against a database, or post a comment.
 
 ---
 
@@ -49,8 +54,8 @@ database, or post a comment.
 | Stage | Status | Progress | Notes |
 | --- | --- | --- | --- |
 | 1. Ingest | 🔴 Not Started | 0% | `pipeline/ingest.py::ingest_pull_request` raises `NotImplementedError`. `RunContext` exists and carries `base_sha` / `head_sha` fields, but nothing populates them. |
-| 2. Query Extraction | 🟡 Partial | ~50% | **SQL is done** (`extract/sql.py`, 36 tests). `extract/dispatcher.py::extract_queries` routes `.sql` to SQL extraction and `.java` to narrow JPQL `@Query` extraction, always returning `list[ExtractedQuery]`. Native Java queries and Spring Data derived methods remain unimplemented. |
-| 3. Static Analysis | ✅ Complete | Stage machinery 100%; rule coverage 5 of 9 planned smells | `RuleEngine` + registry + schema-provider protocol + 5 rules, 92 tests. Deliberately not blocked on the remaining 4 smells — they are new files, not changes to the stage. |
+| 2. Query Extraction | 🟡 Partial | ~65% | **SQL is done** (`extract/sql.py`, 36 tests). `extract/dispatcher.py::extract_source` takes a `SourceFile` and resolves an `Extractor` from a registry keyed on file extension — `.sql` and `.java` today, a new language by registration only. Java recognition runs against `JavaSource`, a scanner that separates code from comments and literals and does real bracket matching. Other Java query forms and derived-method grammar remain unimplemented. |
+| 3. Static Analysis | ✅ Complete | Stage machinery 100%; rule coverage 5 of 9 planned smells | `RuleEngine` + registry + schema-provider protocol + shared AST helpers + 5 rules, 94 tests. Deliberately not blocked on the remaining 4 smells — they are new files, not changes to the stage. |
 | 4. Database Provisioning | 🔴 Not Started | 0% | `db/provision.py::provision_reference_db` raises. No `docker/` directory, no schema snapshot, no HypoPG image. |
 | 5. Execution Plan Analysis | 🔴 Not Started | 0% | `pipeline/explain.py` — both `explain_analyze` and `analyze_plan` raise. `analyze_plan` is deliberately shaped to take plan JSON as data so it can be unit-tested offline; no `tests/fixtures/plans/` corpus exists yet. |
 | 6. HypoPG | 🔴 Not Started | 0% | `pipeline/hypopg.py::simulate_indexes` raises. `Suggestion.cost_before` / `cost_after` fields exist and are unused. |
@@ -63,14 +68,17 @@ database, or post a comment.
 
 | Component | Status | Notes |
 | --- | --- | --- |
-| Stage contracts (`models/`) | ✅ Complete | 10 Pydantic models, re-exported at package level, round-trip losslessly through JSON. |
+| Stage contracts (`models/`) | ✅ Complete | 11 Pydantic models, all deriving from the frozen `Contract` base, re-exported at package level, round-trip losslessly through JSON. A stage cannot edit its input. |
+| Extraction extension point (`extract/base.py`, `registry.py`) | ✅ Complete | `Extractor` protocol + `ExtractorRegistry`. Duplicate extensions rejected. A new language changes no existing module. |
+| Java scanner (`extract/java_source.py`) | ✅ Complete | Code/comment/literal classification, two length-preserving masked views, bracket matching, binary-search line lookup. 33 tests. |
+| Architecture documentation (`docs/architecture.md`) | ✅ Complete | Stage contracts, the extraction sub-architecture, every extension point, and the deferred decisions with their reasoning. |
 | Pipeline orchestrator (`pipeline/runner.py`) | ✅ Complete for the wired stages | Owns stage order, fail-soft boundaries, and the run log record. Extends per stage as stages land. **Uncommitted.** |
 | API surface (`api/main.py`) | ✅ Complete for the wired stages | `GET /health`, `POST /analyze`. Unimplemented options are refused with 501 rather than silently ignored. |
 | Dependency injection (`api/deps.py`) | ✅ Complete | `get_analysis_runner`, cached, overridable via `app.dependency_overrides`. **Uncommitted.** |
 | p6spy statement-log parser (`integrations/p6spy.py`) | ✅ Complete | Parses, AST-normalizes, groups by shape, ranks repeats. 13 tests against a log captured from a real sandbox run. |
 | Sandbox fixture app (`queryguard-sandbox/`) | ✅ Complete | Spring Boot 3.5 / JDK 21, Flyway migration, deterministic seed, 4 planted bugs + 4 healthy counterparts, p6spy wired. 21 tests guard it. |
 | Structured logging | ✅ Complete for the wired stages | One INFO record per run carrying `run_id`, `repo`, `pr_number`, query/finding counts, `processing_time_ms`, `degraded_stages` — in both `extra` and the message text. |
-| Tooling config (`pyproject.toml`) | ✅ Complete | ruff (line length 100, 8 rule families) + mypy strict. **Uncommitted.** |
+| Tooling config (`pyproject.toml`) | ✅ Complete | ruff (line length 100, 8 rule families) + mypy strict, with **no per-module error-code overrides**. |
 | Configuration (`config.py`) | 🔴 Not Started | Does not exist. Nothing reads `os.environ` anywhere yet, so the convention is currently satisfied by having no configuration at all. |
 | CLI (`cli.py`) | 🔴 Not Started | Does not exist. |
 | Java sidecar (`java-parser/`) | 🔴 Not Started | Does not exist. |
@@ -221,41 +229,45 @@ matches what the Python parser expects.
 
 ### Toolchain
 
-`ruff format --check` — 56 files clean. `ruff check` — all checks passed.
-`mypy --strict` — success across 53 source files (with three test modules'
-pre-existing debt quarantined by exact error code; see debt item TD-6).
+`ruff format --check` — 70 files clean. `ruff check` — all checks passed.
+`mypy --strict` — success across 66 source files, with **no per-module error-code
+overrides** — the three previously quarantined test modules were fixed rather than
+narrowed.
 
 ---
 
 ## Partial Features
 
-### Query extraction (stage 2) — the SQL third of three
+### Query extraction (stage 2) — the stage is finished; the languages are not
 
-`pipeline/extract/dispatcher.py::extract_queries(path, content)` is now the single
-per-file extraction entry point. It selects the SQL extractor for `.sql`, narrow JPQL
-`@Query` extraction for `.java`, and returns an empty `list[ExtractedQuery]` for every
-other extension. It contains no parsing logic; downstream stages continue to consume
-only `ExtractedQuery` objects.
+`pipeline/extract/dispatcher.py::extract_source(source)` is the stage entry point:
+one `SourceFile` in, `list[ExtractedQuery]` out, whatever language the file is
+written in. It resolves an `Extractor` from a registry keyed on file extension and
+returns an empty list for an extension nobody claims. It contains no parsing logic
+and names no language outside its two registration lines.
 
 | Piece | State |
 | --- | --- |
-| `extract_from_sql` | ✅ Finished, 36 tests |
-| `extract_java` | 🟡 Simple JPQL `@Query` annotations and text blocks |
-| `parse_derived_method` | 🔴 Stub |
-| `extract_queries` (per-file dispatcher) | ✅ Routes `.sql` and `.java` |
+| `Extractor` protocol + `ExtractorRegistry` | ✅ Finished, 24 tests. A new language is a new module and one registration. |
+| `extract_from_sql` / `SqlExtractor` | ✅ Finished, 36 tests. Honours a declared dialect. |
+| `JavaSource` scanner | ✅ Finished, 33 tests. Code/comment/literal classification and bracket matching. |
+| `extract_java` / `JavaExtractor` | 🟡 JPQL and native-SQL `@Query` annotations, including text blocks |
+| `parse_derived_query` → `DerivedQuery` → renderer | 🟡 `findBy`, `countBy`, `existsBy`, `deleteBy`; equality and `And` only |
+| `extract_queries(path, content)` | ✅ Retained as a backwards-compatible shim; cannot carry a dialect |
 
-**Finished:** everything needed to turn a `.sql` file or a SQL snippet into
-`ExtractedQuery` objects with accurate provenance.
+**Finished:** the stage's architecture. Contract, registry, dispatch, provenance,
+identity, and the tokenization boundary under Java recognition. Adding a language
+changes no existing module.
 
-**Remaining:** Java extraction recognizes only a single string literal or text block
-as the sole `@Query` argument. Native queries, `createQuery` /
-`createNativeQuery` calls, named queries, concatenation, variables, and repository
-method names remain invisible.
-`parse_derived_method` has a documented design constraint but no body — and it is the
-harder half, because the SQL a derived method emits is often *not* what the name
-suggests (`findByCustomerId` on a `@ManyToOne` compiles to a join filtered on the
-parent's primary key, not `orders.customer_id = ?`). Diff parsing is still absent,
-which is why `POST /analyze` returns 501 for `diff`.
+**Remaining:** Java extraction recognizes only a literal JPQL `@Query` or its
+two-argument `value` / `nativeQuery` form. `createQuery` / `createNativeQuery` calls,
+named queries, concatenation, and variables remain invisible — though an
+unsupported `@Query` now correctly suppresses derived decoding for the method it
+decorates rather than inventing SQL for it. The derived-method decoder handles four
+operations with equality predicates joined by `And`; it does not infer mappings,
+joins, nested properties, operators, ordering, limits, distinctness, or collection
+semantics. Diff parsing is still absent, which is why `POST /analyze` returns 501
+for `diff`.
 
 **Consequence:** QueryGuard's stated input is a pull request. Its actual input today
 is SQL you hand it directly.
@@ -353,24 +365,23 @@ the HTTP surface.
 | ID | Severity | Item | Detail and cost |
 | --- | --- | --- | --- |
 | TD-1 | **High** | Invariants 1 & 2 are unenforced | `db/session.py` and `db/provision.py` are stubs, so "never connect to a real database" and "every statement inside `BEGIN`…`ROLLBACK`" are prose in CLAUDE.md with no code and no tests behind them. These are the product's safety guarantees. They need tests written *with* the first line of body, not after. |
-| TD-2 | **High** | The real entry point is unreachable | Without `extract_queries`, `ingest_pull_request`, and `fetch_diff`, nothing can analyze a pull request. Everything proven today is proven on SQL supplied by hand, which is not how the product is meant to be used. Risk: the diff path surfaces provenance and dispatch problems the current tests cannot see. |
-| TD-3 | Medium | Duplicate query IDs | IDs are `<path>:<ordinal>`, so submitting the same path twice yields two queries with the same ID (`a.sql:1`, `a.sql:1`). Pinned deliberately by `test_the_same_source_supplied_twice_is_analyzed_twice`, but it will break finding-to-query lookup once a consumer keys on ID — the Markdown renderer is the likely first victim. |
-| TD-4 | Medium | Two entry points for stage 3 | `base.py::run_static_rules` is a thin wrapper over `RuleEngine` that nothing calls — the runner uses `RuleEngine` directly. Dead code with a comment claiming it is "the stage entry point the pipeline and the API wiring name", which is no longer true. Delete it or route the runner through it. |
-| TD-5 | Medium | Stale documentation inside the code | `static_rules/rules/__init__.py` still says *"Empty until the first rule lands"* — there are five. CLAUDE.md's folder tree marks `rules/` as `(empty)` and `api/deps.py` as `TODO` (it exists), and omits `pipeline/runner.py` and `pyproject.toml` entirely. |
-| TD-6 | Medium | Quarantined mypy debt | `pyproject.toml` disables `union-attr`, `comparison-overlap`, and `arg-type` for three test modules (`test_sandbox_fixtures`, `test_placeholders`, `static_rules/conftest`). Scoped by exact code rather than blanket-ignored, and none of it is in shipped code — but it is still three modules not held to strict mode. |
+| TD-2 | **High** | The real entry point is unreachable | Per-file extraction now works and routes by language, but without `ingest_pull_request` and `fetch_diff` there is nothing to feed it. Everything proven today is proven on sources supplied by hand, which is not how the product is meant to be used. Risk: the diff path surfaces hunk-offset and renamed-file provenance problems the current tests cannot see. |
+| TD-3 | Medium | Query IDs are unique per file, not per run | Minted centrally in `extract/base.py` as `<path>:<ordinal>` or `<path>:<symbol>`, so the three extractors can no longer disagree about the format — but submitting the same path twice still yields two queries with the same ID. Pinned deliberately by `test_the_same_source_supplied_twice_is_analyzed_twice`. It breaks finding-to-query lookup once a consumer keys on ID; the Markdown renderer is the likely first victim, and is the right consumer to state the requirement. |
+| TD-5 | Low | Stale documentation outside the code | CLAUDE.md's folder tree marks `rules/` as `(empty)` and `api/deps.py` as `TODO` (both exist), and omits `pipeline/runner.py`, `pyproject.toml`, and `docs/` entirely. Reduced, not closed: every docstring inside the code is now accurate. |
 | TD-7 | Medium | Dev tooling is not a declared dependency | `ruff` and `mypy` are required by CLAUDE.md and configured in `pyproject.toml`, but appear in neither `requirements.txt` nor any dev-requirements file. A fresh clone cannot run the checks the conventions mandate. |
 | TD-8 | Medium | No CI | `.github/workflows/` does not exist. Lint, typecheck, and tests pass only because someone ran them by hand; nothing prevents a regression from being committed. |
 | TD-9 | Medium | No configuration layer | `config.py` does not exist. Today that is fine — nothing reads `os.environ` anywhere — but the moment GitHub or Claude lands, the "config comes from `config.py` only, no secrets in logs" convention has to be honoured by a module that does not yet exist. |
-| TD-10 | Low | Duplicated column-resolution logic | `_table_aliases` and `_resolve_table` are implemented twice, in `rules/unindexed_filter.py` and `rules/non_sargable.py`, with slightly different code. Both are alias-resolution helpers that belong in `base.py`; two copies will drift. |
 | TD-11 | Low | Overlapping API tests | `test_api.py::test_analyze_returns_a_report` asserts `findings == []`, which now passes only because the request supplies no SQL. It reads like a claim about `/analyze` and is really a claim about the empty case, already covered better in `test_analyze_endpoint.py`. |
-| TD-12 | Low | No coverage measurement | `pytest-cov` is not installed or declared, so line/branch coverage is unknown. With 227 tests over ~1,400 lines of implementation it is likely high on the implemented paths, but that is an inference, not a number. |
+| TD-12 | Low | No coverage measurement | `pytest-cov` is not installed or declared, so line/branch coverage is unknown. With 384 tests over ~1,800 lines of implementation it is likely high on the implemented paths, but that is an inference, not a number. |
 | TD-13 | Low | Line-ending churn, no `.gitattributes` | Git reports LF→CRLF conversion on 20 files on every status. Harmless today; noisy in diffs and a future source of spurious conflicts. |
+| TD-14 | Medium | Java extraction is still pattern-based | `extract/java.py` recognizes annotations and declarations by regular expression. The `JavaSource` scanner removes the two defect classes that made that dangerous (a comment read as code, `find("}")` read as a closing brace), and the `Extractor` protocol means the JavaParser sidecar swaps in behind one interface — but concatenated annotation values, `createQuery` calls, and named queries remain invisible. **Deliberately deferred**, with the reasoning in `docs/architecture.md`. |
+| TD-15 | Medium | No Normalization stage | The preferred architecture places Normalization between Extraction and Analysis. It does not exist: `ExtractedQuery.normalized` is set by the SQL extractor, and the rule engine parses JPQL *as SQL*, so entity names are read as table names. Closing it needs entity-to-table metadata no stage produces; an empty stage inserted now would be ceremony. |
 
 ---
 
 ## Test Summary
 
-**Total: 227 tests. 227 pass. 0 fail, 0 skip, 0 xfail. 0.59 s.**
+**Total: 384 tests. 384 pass. 0 fail, 0 skip, 0 xfail. 0.69 s.**
 
 No Docker, no JDK, no credentials, no network.
 
@@ -378,33 +389,40 @@ No Docker, no JDK, no credentials, no network.
 
 | File | Tests | Covers |
 | --- | --- | --- |
+| `tests/unit/test_derived_extraction.py` | 39 | Method-name decoding, the `DerivedQuery` IR, rendering, entity-to-table placeholders, rejected grammar |
 | `tests/unit/test_sql_extraction.py` | 36 | Statement splitting, provenance, line numbers, BOM, dialects, malformed input, pathological-but-legal SQL |
+| `tests/unit/test_java_source.py` | 33 | The Java scanner: region classification, mask length/newline preservation, bracket matching, unterminated constructs, line lookup |
+| `tests/unit/test_java_extraction.py` | 31 | `@Query` shapes, text blocks, derived methods, comment and literal exclusion, brace matching, source ordering, identity |
+| `tests/unit/test_model_contracts.py` | 25 | Immutability of every stage contract, `model_copy` derivation, serialization invariance, the SQL-specific field staying off the base |
 | `tests/unit/test_sandbox_fixtures.py` | 21 | Guards the four planted bugs and their healthy counterparts against being "fixed"; asserts the `spy.properties` format still matches the parser |
-| `tests/unit/test_placeholders.py` | 19 | Asserts 16 stub entry points still raise `NotImplementedError`; pins the rule registry, `COMMENT_MARKER`, and `MODEL` |
+| `tests/unit/test_analyze_endpoint.py` | 20 | `POST /analyze` behaviour: findings, severity, provenance, degradation, 501s, 422s, DI seam, no traceback leakage, multi-language sources, dialect honouring |
 | `tests/unit/static_rules/test_non_sargable.py` | 18 | Leading wildcards, wrapped columns, explicit and implicit casts, mirror-image false-positive guards |
 | `tests/unit/test_pipeline_contracts.py` | 17 | Determinism, ranking, duplicates, internal consistency, JSON round-trip, concurrency |
-| `tests/unit/test_analyze_endpoint.py` | 16 | `POST /analyze` behaviour: findings, severity, provenance, degradation, 501s, 422s, DI seam, no traceback leakage |
+| `tests/unit/test_placeholders.py` | 16 | Asserts stub entry points still raise `NotImplementedError`; pins the rule registry, `COMMENT_MARKER`, and `MODEL` |
 | `tests/unit/static_rules/test_no_limit.py` | 16 | Unbounded scans and all four exclusions |
+| `tests/unit/test_extraction_dispatcher.py` | 15 | Routing by extension, the injected-registry seam, open/closed extension, dialect flow-through, the pair-shaped shim |
+| `tests/unit/static_rules/test_engine.py` | 15 | Single-parse guarantee, rule isolation, ranking, `Command` handling, log filter idempotence, duplicate `rule_id` rejection |
 | `tests/unit/static_rules/test_unindexed_filter.py` | 14 | Indexable positions, alias resolution, silence without schema |
 | `tests/unit/test_p6spy.py` | 13 | Log parsing, AST normalization, N+1 vs caching, ordering, category filtering |
 | `tests/unit/static_rules/test_missing_where.py` | 13 | Unqualified writes, `USING`/`LIMIT`/`TRUNCATE` exclusions |
-| `tests/unit/static_rules/test_engine.py` | 13 | Single-parse guarantee, rule isolation, ranking, `Command` handling, log filter idempotence |
 | `tests/unit/static_rules/test_select_star.py` | 11 | Bare and qualified stars, `COUNT(*)` exclusion |
+| `tests/unit/test_extractor_registry.py` | 9 | Extension normalization, duplicate rejection and its atomicity, structural protocol satisfaction |
 | `tests/unit/test_analysis_runner.py` | 8 | Stage ordering, fail-soft boundaries, engine call shape, run logging |
 | `tests/unit/static_rules/test_planted_bugs_end_to_end.py` | 7 | Sandbox bug → extract → engine → `Finding`, and silence on healthy counterparts |
 | `tests/unit/test_api.py` | 5 | `/health`, basic `/analyze` validation |
+| `tests/unit/test_source_file.py` | 2 | Language-neutral source contracts through the runner |
 
 ### By category
 
 | Category | Count | Notes |
 | --- | --- | --- |
-| **Unit tests** | 227 | All of them. Everything runs in-process. |
+| **Unit tests** | 384 | All of them. Everything runs in-process. |
 | **Integration tests** | **0** | `tests/integration/` does not exist. The `integration` marker is declared in `pytest.ini` and used by nothing. |
 | **End-to-end tests** | 7 | `test_planted_bugs_end_to_end.py` — cross-stage (extract → engine), no database. Lives under `unit/` on purpose: in this repo `integration` means "needs Docker", and the static stage runs before anything is provisioned. |
-| **API tests** | 21 direct + 3 indirect | `test_api.py` (5) + `test_analyze_endpoint.py` (16), plus 3 in `test_pipeline_contracts.py` that drive `TestClient` for encoding and concurrency. |
+| **API tests** | 25 direct + 3 indirect | `test_api.py` (5) + `test_analyze_endpoint.py` (20), plus 3 in `test_pipeline_contracts.py` that drive `TestClient` for encoding and concurrency. |
 | **Coverage** | Not measured | See TD-12. |
 
-### New this milestone
+### Previous milestone's additions
 
 **+77 tests** (150 → 227), in four new files:
 
@@ -429,10 +447,12 @@ real), and revisions across the existing static-rule suites.
 
 ## Demo Status
 
-**Yes — this milestone is demonstrable, live, in under a minute, on a clean clone.**
+**Yes — demonstrable live, in under a minute, on a clean clone.**
 
-This is the first milestone where a demo shows *QueryGuard working* rather than
-QueryGuard's tests passing.
+The previous milestone was the first where a demo showed *QueryGuard working*
+rather than QueryGuard's tests passing. This one adds the second language to that
+demo, and adds the negative case that matters most: a `@Query` written in a comment
+producing nothing.
 
 ### What can be shown
 
@@ -445,8 +465,14 @@ QueryGuard's tests passing.
 5. **Fail-soft**: one unparseable file degrades to a named caveat while the others are
    still analyzed in full, at HTTP 200.
 6. **Honest 501s** on `diff` and `post_comment` instead of a falsely empty report.
-7. The p6spy parser isolating an N+1 from a real captured statement log.
-8. The full toolchain clean: 227 tests, ruff, mypy strict.
+7. **A Java repository analyzed through the same endpoint** — a derived method
+   decoded to SQL-shaped semantics, anchored to `file:line:symbol`.
+8. **A `@Query` inside a comment producing nothing**, while the real method beneath
+   it is still found. The harder half of the harder half.
+9. **A declared dialect honoured** — MySQL backtick quoting parsed as MySQL rather
+   than reported unanalyzable.
+10. The p6spy parser isolating an N+1 from a real captured statement log.
+11. The full toolchain clean: 384 tests, ruff, mypy strict, no quarantined codes.
 
 ### Demo script
 
@@ -454,7 +480,7 @@ QueryGuard's tests passing.
 pip install -r requirements.txt
 
 # 1. Everything green, no Docker / JDK / credentials.
-pytest                                            # 227 passed
+pytest                                            # 384 passed
 
 # 2. Start the service.
 uvicorn queryguard.api.main:app --reload
@@ -484,7 +510,27 @@ curl -s localhost:8000/analyze -H 'content-type: application/json' -d '{
   "sql": "SELECT id, order_number, status FROM orders WHERE placed_at >= :since"
 }'
 
-# 7. Honest refusal.
+# 7. A Java repository, a ghost @Query in a comment, and nested braces.
+curl -s localhost:8000/analyze -H 'content-type: application/json' -d '{
+  "repo": "acme/billing-service",
+  "pr_number": 42,
+  "sources": [
+    {
+      "path": "src/CustomerRepository.java",
+      "content": "public interface CustomerRepository {\n    // @Query(\"SELECT c FROM Ghost c\")\n    default List<Customer> all() { return List.of(); }\n    Customer findByEmail(String email);\n}\n"
+    }
+  ]
+}'
+
+# 8. A declared dialect, honoured rather than dropped.
+curl -s localhost:8000/analyze -H 'content-type: application/json' -d '{
+  "repo": "acme/billing-service", "pr_number": 42,
+  "sql_files": [
+    {"path": "m.sql", "content": "SELECT `id` FROM orders WHERE id = 1", "dialect": "mysql"}
+  ]
+}'
+
+# 9. Honest refusal.
 curl -s -o /dev/null -w '%{http_code}\n' localhost:8000/analyze \
   -H 'content-type: application/json' \
   -d '{"repo":"acme/x","pr_number":1,"post_comment":true}'      # 501
@@ -522,6 +568,39 @@ Step 5 — `status: "degraded"`, HTTP **200**, `degraded_stages:
 ["extract:migrations/002_broken.sql"]`, findings present for `001` and `003` only.
 Step 6 — `findings: []`, `degraded_stages: []`, `queries` length 1. Silence that means
 *analyzed and clean*, not *never looked*.
+
+Step 7 — real output, trimmed. Exactly one query: the ghost in the comment is
+absent, and the derived method after the `default` method's braces is still found.
+
+```json
+{
+  "status": "completed",
+  "report": {
+    "queries": [
+      {
+        "id": "src/CustomerRepository.java:findByEmail",
+        "kind": "spring_data_derived",
+        "text": "SELECT *\nFROM customer\nWHERE email = ?",
+        "provenance": {
+          "file": "src/CustomerRepository.java",
+          "line": 4,
+          "symbol": "findByEmail"
+        }
+      }
+    ],
+    "findings": [
+      {
+        "rule_id": "select-star",
+        "severity": "medium"
+      }
+    ],
+    "degraded_stages": []
+  }
+}
+```
+
+Step 8 — `dialect: "mysql"`, `parse_error: null`, `degraded_stages: []`. The same
+statement submitted without the dialect comes back unanalyzable.
 
 ### What must NOT be claimed in a demo
 
@@ -563,17 +642,18 @@ Markdown); the marker is present and first; no fixture in the snapshot is the st
 ### Task 2 — Read a real pull request (stages 1–2)
 
 Implement `integrations/github.py::fetch_pull_request` and `fetch_diff`, then
-`pipeline/ingest.py::ingest_pull_request`, then
-`extract/__init__.py::extract_queries` — the dispatcher that routes a changed file to
-`extract_from_sql` (today) or `extract_from_java` (later, unimplemented; it must
-degrade, not raise). Add `config.py` here, because this is the first stage that needs
-a token. Record a real PR payload and diff into `tests/fixtures/diffs/`.
+`pipeline/ingest.py::ingest_pull_request`. Per-file extraction is **already done**:
+a changed file becomes a `SourceFile` and `extract_source` routes it, so this task
+is diff parsing and nothing else — resolving changed files and hunks into sources,
+not deciding which extractor sees them. Add `config.py` here, because this is the
+first stage that needs a token. Record a real PR payload and diff into
+`tests/fixtures/diffs/`.
 
-*Acceptance:* `POST /analyze` with `diff` returns findings instead of 501; the
-dispatcher handles added, modified, renamed, and deleted files, and hunk-level line
-offsets, so a finding's line matches the **head** file; a Java file in the diff
-degrades that file only; no token is ever logged; unit tests run from the recorded
-fixture with no network.
+*Acceptance:* `POST /analyze` with `diff` returns findings instead of 501; ingest
+handles added, modified, renamed, and deleted files, and hunk-level line offsets, so
+a finding's line matches the **head** file; a file in a language no extractor claims
+is skipped rather than degraded; a file that raises degrades that file only; no token
+is ever logged; unit tests run from the recorded fixture with no network.
 
 ### Task 3 — Post one idempotent comment (invariant 4)
 
@@ -596,14 +676,125 @@ report; QueryGuard never pushes, edits files, or approves/blocks a merge.
   or response.
 - The corresponding cases in `test_placeholders.py` are **deleted**, not weakened —
   that file's shrinking is the progress metric.
-- Comment format is snapshot-tested. 227 tests still pass. ruff and mypy strict still
-  clean. TD-4 and TD-5 closed on the way past.
+- Comment format is snapshot-tested. All 384 tests still pass. ruff and mypy strict still
+  clean. TD-5 closed on the way past.
 
 ---
 
 ## Changelog
 
-### This milestone — *Wire the implemented stages end to end behind `POST /analyze`*
+### This milestone — *Architecture hardening*
+
+No new capability. The goal was to remove shortcuts that were fine while the
+extract stage handled one language and are not fine now that it handles two and is
+planned to handle more. Three of them turned out to be defects rather than
+inelegance.
+
+#### Defects found and fixed
+
+1. **A `@Query` inside a comment was extracted as a query.** Patterns ran against
+   raw source, so `// @Query("SELECT c FROM Ghost c")` produced a candidate and
+   would have produced a finding against a query the pull request does not
+   contain. A reviewer who looks, finds nothing, and stops believing the next
+   report is the failure this project cannot afford.
+2. **A `default` method truncated the interface body.** The body ended at
+   `content.find("}")` — the first closing brace in the file, which for any
+   repository carrying a `default` method is that method's. Every derived method
+   after it was silently invisible.
+3. **`SqlSource.dialect` was dropped on the floor.** The runner called
+   `extract_queries(source.path, source.content)`, so the dialect never reached
+   the extractor. A caller declaring `dialect: "mysql"` had their valid MySQL
+   parsed as Postgres and reported as unanalyzable — a public field that did
+   nothing.
+
+Two behaviour improvements came out of the same work: an unsupported `@Query`
+(concatenation, say) now suppresses derived-method decoding for the method it
+decorates, instead of letting QueryGuard invent SQL the application never issues;
+and queries are emitted in source order rather than annotations-then-derived.
+
+#### Files added
+
+| File | Purpose |
+| --- | --- |
+| `queryguard/pipeline/extract/java_source.py` | `JavaSource` — the tokenization boundary: code/comment/literal classification, two length-preserving masked views, real bracket matching |
+| `queryguard/pipeline/extract/base.py` | `Extractor` protocol, `DEFAULT_DIALECT`, centralized query-ID minting |
+| `queryguard/models/base.py` | `Contract` — the frozen base every stage contract derives from |
+| `queryguard/pipeline/static_rules/ast_helpers.py` | Shared AST readings, previously duplicated across two rules |
+| `docs/architecture.md` | Stage contracts, the extraction sub-architecture, extension points, deferred decisions |
+| `tests/unit/test_java_source.py` | 33 tests for the scanner |
+| `tests/unit/test_model_contracts.py` | 25 tests for contract immutability |
+
+#### Architecture changes
+
+- **Extraction became open for extension, closed for modification.** The contract
+  is `Extractor.extract(SourceFile) -> list[ExtractedQuery]`, resolved through
+  `ExtractorRegistry`. The dispatcher names no language except in its two
+  registration lines; a new language is a new module and one `register` call.
+  `test_a_new_language_needs_no_change_to_the_dispatcher` pins it.
+- **The stage input became a model, not a pair.** `(path, content)` cannot carry
+  per-source options, which is exactly how `SqlSource.dialect` became decorative.
+  `SourceFile` still carries no `dialect` — that would put SQL's concerns on every
+  language's input model — so `SqlExtractor` narrows with one `isinstance`, in the
+  one component that knows what a dialect is.
+- **Java pattern-matching got a tokenization boundary under it.** Recognition is
+  still regex, but it runs against a scanned view. The scanner knows nothing about
+  queries, so replacing it with the JavaParser sidecar replaces one collaborator
+  rather than untangling extraction from lexing.
+- **Derived methods split into decode / render / anchor.** `DerivedQuery` is now a
+  public frozen IR rather than a local variable. A second framework's decoder
+  (Micronaut Data, Spring Data JDBC) targets the same IR and reuses the renderer,
+  and the planned fan-out rule can ask about semantics instead of re-parsing text
+  we just printed.
+- **Stage contracts became immutable.** All eleven Pydantic models derive from
+  `Contract` (`frozen=True`). A rule can no longer rewrite the query text a later
+  stage reports, nor re-anchor a finding onto a different file. This also
+  underwrites the byte-identical-output property that invariant 4 depends on.
+- **Both registries now behave the same way when misused.** `register()` rejects a
+  duplicate `rule_id` as `ExtractorRegistry` rejects a duplicate extension. The
+  failure closed is a rule reachable by two import paths, whose only symptom would
+  have been every one of its findings appearing twice in the comment.
+- **Quadratic annotation lookup removed.** Suppression re-scanned the whole prefix
+  with the full annotation pattern once per derived method; extents are now
+  computed once and searched with `bisect`. Line resolution likewise moved from
+  `text.count("
+", 0, offset)` per query to binary search over precomputed line
+  starts.
+
+#### Backwards compatibility
+
+| Symbol | Status |
+| --- | --- |
+| `extract_queries(path, content)` | Kept, delegates to `extract_source`. Documented as the narrower entry point — it cannot carry a dialect. |
+| `extract_java`, `extract_from_sql`, `parse_derived_method` | Unchanged signatures and unchanged output for every previously supported input. |
+| `run_static_rules`, `clause`, `has_clause`, `RULES`, `register` | Unchanged; the AST helpers are re-exported from `base.py` so no rule's imports moved. |
+| `SqlSource`, `AnalyzeRequest.sql`, `sql_files` | Unchanged. `sources` is additive. |
+| Model JSON shapes | Unchanged — `test_freezing_does_not_change_the_serialized_shape` pins it. |
+
+The one intentional behaviour change beyond the defect fixes is emission order
+within a Java file (source order now), which is covered by
+`test_queries_are_emitted_in_source_order`.
+
+#### Impact
+
+- **Performance:** better. Two quadratic paths removed; the scanner adds one
+  linear pass and two string builds per Java file, which is cheaper than the
+  repeated prefix scans it replaced. SQL extraction is untouched.
+- **Testing:** 227 → 384 tests. Dispatcher tests moved off `monkeypatch` onto the
+  injected-registry seam, which tests the extension point rather than testing that
+  `monkeypatch` works.
+- **Typing:** the mypy quarantine in `pyproject.toml` is **gone** — all three
+  modules were fixed rather than narrowed, so `mypy --strict` now passes with no
+  per-module error-code overrides. This closes TD-6.
+
+#### Debt closed
+
+TD-4 (dead second entry point for stage 3 — the docstring was wrong, not the
+code; corrected and its purpose stated), TD-6 (quarantined mypy debt), TD-10
+(duplicated column-resolution logic). TD-3 and TD-5 narrowed.
+
+---
+
+### Previous milestone — *Wire the implemented stages end to end behind `POST /analyze`*
 
 Before this milestone, static analysis worked and nothing called it: `POST /analyze`
 minted a run ID and returned an empty report with `status: "not_implemented"`. The
@@ -716,7 +907,7 @@ desynchronizes as soon as a segment appears in one but not the other:
 
 ### What earns it
 
-- **+ Test quality well above the norm.** 227 tests, all passing, sub-second, zero
+- **+ Test quality well above the norm.** 384 tests, all passing, sub-second, zero
   external dependencies. More importantly they test the *right* things: false-positive
   guards paired with every positive case, determinism, concurrency under a shared
   runner, lossless serialization, and internal consistency between findings and
@@ -727,11 +918,17 @@ desynchronizes as soon as a segment appears in one but not the other:
   verbatim in the sandbox source, so editing a planted bug fails the suite instead of
   silently testing SQL that no longer exists. `/analyze` returns 501 rather than a
   falsely empty report. This is the single best thing about the repository.
-- **+ Toolchain fully green.** ruff format, ruff check, mypy strict — all clean, with
-  debt quarantined by exact error code rather than blanket-ignored.
+- **+ Toolchain fully green.** ruff format, ruff check, mypy strict — all clean,
+  with no per-module error-code overrides remaining.
 - **+ Architecture matches its own documentation.** Stages are independently testable,
-  contracts are Pydantic models, orchestration is separated from the HTTP layer, and
-  the DI seam is proven by tests rather than asserted.
+  contracts are immutable Pydantic models, orchestration is separated from the HTTP
+  layer, and every extension point — extractors, rules, schema providers, the pipeline
+  itself — is a Protocol proven by a test rather than asserted.
+- **+ The extract stage is genuinely open for extension.** Adding a source language is
+  a new module and one registration, with a test that pins it. This mattered
+  immediately: hardening it surfaced three live defects (a `@Query` in a comment
+  extracted as real, a `default` method hiding every derived method after it, and a
+  public `dialect` field that nothing read).
 - **+ Judgement is documented, not just decisions.** The code explains why
   `NoLimitRule` excludes filtered queries, why schema-dependent rules stay silent, and
   why derived methods cannot be reasoned about from their names. That is what makes it
@@ -751,11 +948,16 @@ desynchronizes as soon as a segment appears in one but not the other:
   directly, not on a diff.
 - **− Zero integration tests.** The marker is declared and unused; nothing has ever
   run against Postgres or HypoPG.
-- **− Uncommitted work.** The orchestrator, the DI module, the tooling config, and 77
-  tests are untracked. Nothing described as "this milestone" survives a clean clone of
-  the branch.
+- **− Uncommitted work.** This milestone's four new modules and the changes around
+  them are untracked. Nothing described as "this milestone" survives a clean clone
+  of the branch.
 
 ### How the score moves
+
+The score is unchanged from the previous milestone. The architecture hardening
+closed three debt items, removed the mypy quarantine entirely, and added 106 tests —
+but none of that moves the things holding the score down, which are all about
+reachable behaviour rather than the quality of what is built.
 
 **To 8.5:** commit the working tree, add CI enforcing ruff + mypy + pytest, and
 complete the next milestone (Markdown + diff ingest + idempotent comment) — which
