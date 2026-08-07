@@ -142,6 +142,24 @@ class RecordedContents:
         self.decoded_content = text.encode("utf-8")
 
 
+class RecordedIssueComment:
+    """One PR comment, shaped like ``github.IssueComment.IssueComment``.
+
+    Mutable: ``edit`` replaces the body in place, which is how
+    ``upsert_report_comment`` proves that a second run edits rather than creates.
+    """
+
+    _next_id: int = 1
+
+    def __init__(self, body: str) -> None:
+        self.id: int = RecordedIssueComment._next_id
+        RecordedIssueComment._next_id += 1
+        self.body: str = body
+
+    def edit(self, body: str) -> None:
+        self.body = body
+
+
 @dataclass
 class RecordedGitHub:
     """A PyGithub stand-in that answers from the recording and never uses a socket.
@@ -159,10 +177,11 @@ class RecordedGitHub:
 
     #: Paths whose head read raises, to exercise per-file degradation.
     fail_head_for: set[str] = field(default_factory=set)
-    #: Raised by ``get_pull`` / ``get_files`` / ``get_contents`` respectively.
+    #: Raised by ``get_pull`` / ``get_files`` / ``get_contents`` / comments.
     raise_on_pull: BaseException | None = None
     raise_on_files: BaseException | None = None
     raise_on_contents: BaseException | None = None
+    raise_on_comment: BaseException | None = None
     #: Overrides the recorded entries, for cases the real PR does not contain.
     entries: tuple[Mapping[str, Any], ...] | None = None
 
@@ -170,6 +189,8 @@ class RecordedGitHub:
     head_reads: list[tuple[str, str]] = field(default_factory=list)
     #: How many times a repository was resolved, to prove one run authenticates once.
     repo_lookups: list[str] = field(default_factory=list)
+    #: Mutable list of PR comments, for testing upsert_report_comment.
+    comments: list[RecordedIssueComment] = field(default_factory=list)
 
     @property
     def client(self) -> Github:
@@ -235,6 +256,18 @@ class RecordedPull:
             self._owner.entries if self._owner.entries is not None else self._owner.recorded.entries
         )
         return [RecordedFile(entry) for entry in entries]
+
+    def get_issue_comments(self) -> list[RecordedIssueComment]:
+        if self._owner.raise_on_comment is not None:
+            raise self._owner.raise_on_comment
+        return list(self._owner.comments)
+
+    def create_issue_comment(self, body: str) -> RecordedIssueComment:
+        if self._owner.raise_on_comment is not None:
+            raise self._owner.raise_on_comment
+        comment = RecordedIssueComment(body)
+        self._owner.comments.append(comment)
+        return comment
 
 
 @pytest.fixture

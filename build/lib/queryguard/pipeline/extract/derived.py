@@ -102,9 +102,6 @@ _OPERATORS: tuple[tuple[str, DerivedOperator], ...] = (
     ("NotIn", DerivedOperator.NOT_IN),
     ("GreaterThan", DerivedOperator.GREATER_THAN),
     ("LessThan", DerivedOperator.LESS_THAN),
-    # Spring Data's temporal aliases carry the same comparison semantics.
-    ("After", DerivedOperator.GREATER_THAN),
-    ("Before", DerivedOperator.LESS_THAN),
     ("Between", DerivedOperator.BETWEEN),
     ("Equals", DerivedOperator.EQUALS),
     ("IsNot", DerivedOperator.NOT_EQUALS),

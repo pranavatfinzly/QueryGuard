@@ -1,7 +1,24 @@
-# Tooling configuration only. QueryGuard is run from the source tree (see
-# `pythonpath = .` in pytest.ini), not installed, so there is deliberately no
-# [build-system] or [project] table here.
-#
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "queryguard"
+version = "0.1.0"
+description = "Static pull-request review for database query performance"
+requires-python = ">=3.11"
+dependencies = [
+    "pygithub",
+    "pydantic-settings",
+    "sqlglot",
+]
+
+[project.scripts]
+queryguard = "queryguard.cli:entrypoint"
+
+[tool.setuptools.packages.find]
+include = ["queryguard*"]
+
 # pytest configuration stays in pytest.ini. Splitting it across both files would be a
 # trap: pytest.ini silently wins over [tool.pytest.ini_options] when both exist.
 

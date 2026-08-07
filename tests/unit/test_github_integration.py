@@ -22,7 +22,7 @@ from queryguard.config import MissingConfiguration, override_settings
 from queryguard.integrations import github
 from queryguard.integrations.github import GitHubUnavailable, redact
 from queryguard.models.diff import ChangeStatus, SkipReason
-from queryguard.models.report import RunContext
+from queryguard.models.report import Report, RunContext
 from queryguard.pipeline.extract import ExtractorRegistry, SqlExtractor
 from queryguard.pipeline.ingest import ingest_pull_request
 from queryguard.pipeline.runner import AnalysisRunner
@@ -392,10 +392,9 @@ def test_no_log_record_from_a_failing_run_carries_the_token(
 
 def test_a_call_without_an_injected_client_cannot_silently_reach_the_network() -> None:
     # What makes "unit tests run from the recorded fixture with no network calls" a
-    # property rather than a habit. A test that forgets to inject the stand-in does
-    # not quietly open a socket against a real repository: building a client needs a
-    # token, the suite has none, and the run fails here instead.
-    with pytest.raises(MissingConfiguration, match="GITHUB_TOKEN"):
+    # property rather than a habit. Isolate configuration so a developer's real
+    # token cannot turn this unit test into a live API call.
+    with override_settings(), pytest.raises(MissingConfiguration, match="GITHUB_TOKEN"):
         github.fetch_pull_request("acme/billing", 1)
 
 
@@ -438,3 +437,110 @@ def test_the_module_never_interpolates_the_token_into_a_string() -> None:
 
     assert sorted(calls) == ["Github", "Token", "get_settings", "require_github_token"]
     assert not [node for node in ast.walk(new_client) if isinstance(node, ast.JoinedStr)]
+
+
+# --- Comment upsert -----------------------------------------------------------
+
+
+def test_first_run_creates_exactly_one_comment(
+    recorded_github: RecordedGitHub, recorded_pr: RecordedPullRequest
+) -> None:
+    context = github.fetch_pull_request(
+        recorded_pr.repo, recorded_pr.number, client=recorded_github.client
+    )
+    report = Report(context=context, queries=[], findings=[], degraded_stages=[])
+
+    comment_id = github.upsert_report_comment(context, report, client=recorded_github.client)
+
+    assert isinstance(comment_id, int) and comment_id > 0
+    assert len(recorded_github.comments) == 1
+    assert github.COMMENT_MARKER in recorded_github.comments[0].body
+
+
+def test_second_run_edits_rather_than_creates(
+    recorded_github: RecordedGitHub, recorded_pr: RecordedPullRequest
+) -> None:
+    context = github.fetch_pull_request(
+        recorded_pr.repo, recorded_pr.number, client=recorded_github.client
+    )
+    report1 = Report(context=context, queries=[], findings=[], degraded_stages=[])
+
+    id1 = github.upsert_report_comment(context, report1, client=recorded_github.client)
+    assert id1 is not None
+    assert len(recorded_github.comments) == 1
+    assert "Critical" not in recorded_github.comments[0].body
+
+    # Create a second report with a critical finding to ensure the edit updates the body
+    from queryguard.models.finding import Finding, Severity
+    from queryguard.models.query import Provenance
+    finding = Finding(
+        rule_id="missing-where",
+        severity=Severity.CRITICAL,
+        title="Unqualified write",
+        explanation="Explanation",
+        impact="Impact",
+        suggestions=[],
+        provenance=Provenance(file="a.sql", line=1),
+    )
+    report2 = Report(context=context, queries=[], findings=[finding], degraded_stages=[])
+
+    id2 = github.upsert_report_comment(context, report2, client=recorded_github.client)
+    assert id2 == id1
+    assert len(recorded_github.comments) == 1  # count stays 1
+    assert "Critical" in recorded_github.comments[0].body  # body was updated
+
+
+def test_changed_comment_marker_is_not_matched(
+    recorded_github: RecordedGitHub, recorded_pr: RecordedPullRequest
+) -> None:
+    context = github.fetch_pull_request(
+        recorded_pr.repo, recorded_pr.number, client=recorded_github.client
+    )
+    # If the user edits the comment or the COMMENT_MARKER changes, the old comment is orphaned.
+    from tests.conftest import RecordedIssueComment
+    old_comment = RecordedIssueComment("<!-- queryguard:old-report -->\nBody")
+    recorded_github.comments.append(old_comment)
+
+    report = Report(context=context, queries=[], findings=[], degraded_stages=[])
+    comment_id = github.upsert_report_comment(context, report, client=recorded_github.client)
+
+    # A new comment is created because the old one did not carry COMMENT_MARKER
+    assert comment_id != old_comment.id
+    assert len(recorded_github.comments) == 2
+
+
+def test_github_api_failure_during_comment_upsert_raises_unavailable(
+    recorded_github: RecordedGitHub, recorded_pr: RecordedPullRequest
+) -> None:
+    context = github.fetch_pull_request(
+        recorded_pr.repo, recorded_pr.number, client=recorded_github.client
+    )
+    report = Report(context=context, queries=[], findings=[], degraded_stages=[])
+
+    recorded_github.raise_on_comment = GithubException(403, {"message": "Forbidden"}, None)
+
+    with pytest.raises(GitHubUnavailable, match="403"):
+        github.upsert_report_comment(context, report, client=recorded_github.client)
+
+
+def test_queryguard_never_pushes_edits_files_or_approves() -> None:
+    # Verify that github.py only retrieves pull requests, reads files, lists files,
+    # and manages issue comments. It must not touch ref updates, git commits,
+    # reviews, or merges.
+    # We inspect the AST of queryguard/integrations/github.py for prohibited PyGithub calls.
+    source = (PACKAGE / "integrations" / "github.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    
+    attributes = {
+        node.attr
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Attribute)
+    }
+
+    prohibited = {
+        "merge", "create_commit", "update_file", "create_review", "create_git_ref",
+        "delete_ref", "create_pull", "create_git_tag", "create_issue", "add_to_collaborators"
+    }
+
+    intersection = attributes.intersection(prohibited)
+    assert not intersection, f"QueryGuard calls prohibited PyGithub write APIs: {intersection}"

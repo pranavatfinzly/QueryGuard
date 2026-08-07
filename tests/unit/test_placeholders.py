@@ -29,7 +29,6 @@ UNIMPLEMENTED: list[tuple[Callable[..., Any], tuple[Any, ...]]] = [
     (hypopg.simulate_indexes, (None, None, {})),
     (nplusone.detect_n_plus_one, ([], "")),
     (report.rank_findings, ([],)),
-    (github.upsert_report_comment, (None, None)),
     (claude.request_findings, ("sys", "user")),
 ]
 
