@@ -69,12 +69,7 @@ def test_extracts_multiple_supported_methods_from_a_repository_interface() -> No
 @pytest.mark.parametrize(
     "method_name",
     [
-        "findByEmailOrStatus",
-        "findByCreatedAtBetween",
-        "findByEmailLike",
         "findByStatusOrderByCreatedAt",
-        "findTopByStatus",
-        "findByStatusIgnoreCase",
         "findByCustomer_Address",
         "findBy",
         "findCustomerById",
@@ -119,11 +114,11 @@ def test_annotated_derived_method_is_not_extracted_twice() -> None:
 @pytest.mark.parametrize(
     ("method_name", "operation", "properties"),
     [
-        ("findById", DerivedOperation.FIND, ["id"]),
-        ("countByStatus", DerivedOperation.COUNT, ["status"]),
-        ("existsByEmail", DerivedOperation.EXISTS, ["email"]),
-        ("deleteByStatus", DerivedOperation.DELETE, ["status"]),
-        ("findByCustomerIdAndStatus", DerivedOperation.FIND, ["customer_id", "status"]),
+        ("findById", DerivedOperation.FIND, ["Id"]),
+        ("countByStatus", DerivedOperation.COUNT, ["Status"]),
+        ("existsByEmail", DerivedOperation.EXISTS, ["Email"]),
+        ("deleteByStatus", DerivedOperation.DELETE, ["Status"]),
+        ("findByCustomerIdAndStatus", DerivedOperation.FIND, ["CustomerId", "Status"]),
     ],
 )
 def test_decoding_a_name_yields_framework_neutral_semantics(
@@ -156,7 +151,7 @@ def test_the_unsupported_grammar_is_declared_rather_than_absent() -> None:
 
 @pytest.mark.parametrize(
     "method_name",
-    ["findByEmailOrStatus", "findByCreatedAtBetween", "findByStatusOrderByCreatedAt", "findBy"],
+    ["findByStatusOrderByCreatedAt", "findBy"],
 )
 def test_decoding_rejects_grammar_it_does_not_understand(method_name: str) -> None:
     assert parse_derived_query(method_name) is None

@@ -159,11 +159,16 @@ def test_native_query_false_remains_jpql(content: str) -> None:
         "@Query(nativeQuery = true)",
         '@Query(value = "SELECT * FROM customers", nativeQuery = true',
         '@Query("SELECT " + "c FROM Customer c")',
-        '@Query(value = "SELECT c FROM Customer c")',
     ],
 )
 def test_unsupported_or_malformed_annotations_produce_no_queries(content: str) -> None:
     assert extract_java("CustomerRepository.java", content) == []
+
+
+def test_value_only_annotation_is_jpql() -> None:
+    (query,) = extract_java("CustomerRepository.java", '@Query(value = "SELECT c FROM Customer c")')
+
+    assert query.kind is QueryKind.JPQL
 
 
 # --- What the source is, versus what merely looks like it -------------------

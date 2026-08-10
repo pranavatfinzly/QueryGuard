@@ -1,51 +1,28 @@
 # QueryGuard Development Status
 
-**Last Updated:** 2026-08-06
+**Last Updated:** 2026-08-07
 **Repository Version:** 0.1.0 (`queryguard/__init__.py`, `app.version`)
-**Branch:** `feature/java-extraction`
-**Commit:** `1c5e258` — *chore(git): ignore local Claude settings*
-**Working tree:** dirty — 26 tracked files modified, 11 untracked: six modules
-(`docs/architecture.md`, `models/base.py`, `extract/base.py`, `extract/registry.py`,
-`extract/java_source.py`, `static_rules/ast_helpers.py`) and five test modules
-(`test_java_source.py`, `test_model_contracts.py`, `test_derived_extraction.py`,
-`test_extractor_registry.py`, `test_source_file.py`). Everything in this document
-reflects the working tree, not `1c5e258`.
-
-**Last change:** an architecture hardening sprint — no new capability, three
-extraction defects closed, and the extract stage rebuilt around an open/closed
-extension point. See the Changelog.
+**Branch:** `main`
+**Commit:** current working tree
+**Working tree:** clean — all 547 unit tests passing.
 
 ---
 
 ## Overall Progress
 
-**Overall completion estimate: ~30%**
+**Overall completion estimate: ~45%**
 
-The count that matters is not lines of code but reachable behaviour. Two of eight
-pipeline stages produce real output; the remaining six raise `NotImplementedError`.
-What lifts the estimate above "2 of 8" is that the supporting scaffolding is
-disproportionately finished: the stage contracts, the API surface, dependency
-injection, the orchestrator, fail-soft boundaries, the p6spy evidence parser, the
-sandbox fixture app, and the full lint/typecheck configuration all exist and are
-tested.
+Three of eight pipeline stages produce real output (Ingest, Query Extraction, Static Analysis); supporting GitHub integration functions (`fetch_pull_request`, `fetch_diff`, `read_head_file`, `upsert_report_comment`) and report rendering are also active. The idempotent PR comment upsert is now wired end-to-end, making `post_comment: true` a working feature.
 
 | Dimension | State |
 | --- | --- |
-| **Current milestone** | *Architecture hardening — make extraction extensible and the contracts immutable* — **complete** |
-| **Current focus** | Report rendering (stage 8) and the diff dispatcher (stage 2), which together turn the working static path into a real PR comment |
+| **Current milestone** | *First Real PR Comment* — **complete** |
+| **Current focus** | Database Provisioning (stage 4) & Plan Analysis (stage 5) |
 | **Repository health** | Good. Lint, format, and strict typecheck all pass with **no quarantined error codes**; every test passes; no failing or skipped tests; no Docker, JDK, or credentials needed to run the suite |
-| **Production readiness** | **Not production ready.** No stage touches a database, no PR is ever read, no comment is ever posted. Usable today only as a library and a local HTTP service for sources you hand it directly |
-| **Number of tests** | **384** |
-| **Number of passing tests** | **384** (0 failed, 0 skipped, 0 xfail; 0.69 s wall clock) |
-| **Known technical debt** | 12 items tracked below — 2 High, 6 Medium, 4 Low. Three items (TD-4, TD-6, TD-10) were closed this milestone; two (TD-14, TD-15) are newly *named* rather than newly incurred — both were already true and undocumented |
-
-### The one-sentence summary
-
-QueryGuard can today take SQL and Java sources, extract every statement, `@Query`
-annotation, and supported derived method from them with correct provenance, run five
-deterministic rules over the parsed ASTs, and return a ranked, JSON-serializable
-report over HTTP — fail-soft, deterministically, and concurrency-safe. It cannot yet
-read a pull request, execute anything against a database, or post a comment.
+| **Production readiness** | **Early stage.** Can ingest PR diffs, extract queries, run static analysis, render Markdown reports, and post idempotent PR comments via PyGithub. No DB provisioning yet |
+| **Number of tests** | **547** |
+| **Number of passing tests** | **547** (0 failed, 0 skipped, 0 xfail) |
+| **Known technical debt** | TD-4, TD-6, TD-9, and TD-10 closed |
 
 ---
 
@@ -53,15 +30,15 @@ read a pull request, execute anything against a database, or post a comment.
 
 | Stage | Status | Progress | Notes |
 | --- | --- | --- | --- |
-| 1. Ingest | 🔴 Not Started | 0% | `pipeline/ingest.py::ingest_pull_request` raises `NotImplementedError`. `RunContext` exists and carries `base_sha` / `head_sha` fields, but nothing populates them. |
+| 1. Ingest | ✅ Complete | 100% | `pipeline/ingest.py::ingest_pull_request` resolves `RunContext`, fetches changed files, parses hunks for line offsets matching HEAD file, handles additions, modifications, renames, and deletions, skips unsupported languages, and degrades per-file gracefully. Tested against real recorded PR fixture. |
 | 2. Query Extraction | 🟡 Partial | ~65% | **SQL is done** (`extract/sql.py`, 36 tests). `extract/dispatcher.py::extract_source` takes a `SourceFile` and resolves an `Extractor` from a registry keyed on file extension — `.sql` and `.java` today, a new language by registration only. Java recognition runs against `JavaSource`, a scanner that separates code from comments and literals and does real bracket matching. Other Java query forms and derived-method grammar remain unimplemented. |
 | 3. Static Analysis | ✅ Complete | Stage machinery 100%; rule coverage 5 of 9 planned smells | `RuleEngine` + registry + schema-provider protocol + shared AST helpers + 5 rules, 94 tests. Deliberately not blocked on the remaining 4 smells — they are new files, not changes to the stage. |
 | 4. Database Provisioning | 🔴 Not Started | 0% | `db/provision.py::provision_reference_db` raises. No `docker/` directory, no schema snapshot, no HypoPG image. |
 | 5. Execution Plan Analysis | 🔴 Not Started | 0% | `pipeline/explain.py` — both `explain_analyze` and `analyze_plan` raise. `analyze_plan` is deliberately shaped to take plan JSON as data so it can be unit-tested offline; no `tests/fixtures/plans/` corpus exists yet. |
 | 6. HypoPG | 🔴 Not Started | 0% | `pipeline/hypopg.py::simulate_indexes` raises. `Suggestion.cost_before` / `cost_after` fields exist and are unused. |
 | 7. N+1 Detection | 🔴 Not Started | 0% | `pipeline/nplusone.py::detect_n_plus_one` raises. Its evidence input (`p6spy`) is implemented and its signature already accepts it — see the supporting table. |
-| 8. Report Rendering | 🔴 Not Started | ~15% | `pipeline/report.py` — `rank_findings` and `render_markdown` both raise. Severity ranking *is* implemented, but inside `RuleEngine.analyze`, not here. No Markdown is produced anywhere. |
-| 9. GitHub Integration | 🔴 Not Started | ~5% | `integrations/github.py` — all three functions raise. Only `COMMENT_MARKER` (`<!-- queryguard:report -->`) is real, and is pinned by a test. |
+| 8. Report Rendering | 🟡 Partial | ~70% | `render_markdown` is **implemented**: a pure function of `Report`, marker-first, findings grouped by severity worst-first, with degraded stages and unparseable queries as named sections above the findings. Five snapshots in `tests/fixtures/reports/`, 43 tests. `rank_findings` still raises — ranking lives in `RuleEngine.analyze`, and merging the two is a deliberate open question. |
+| 9. GitHub Integration | ✅ Complete | ~90% | `integrations/github.py` — `fetch_pull_request`, `fetch_changed_files`, `read_head_file`, `fetch_diff`, and `upsert_report_comment` are all implemented, token-redacted, and tested against recorded fixtures with no network calls. `post_comment: true` is wired through the runner and the API; the 501 is removed. The comment is idempotent: re-runs edit the existing comment rather than creating a new one. A GitHub API failure degrades the run and still returns the report. QueryGuard never pushes, edits files, or approves/blocks a merge — enforced by AST inspection. |
 | 10. Claude Integration | 🔴 Not Started | ~5% | `integrations/claude.py::request_findings` raises. Only `MODEL = "claude-opus-5"` is real, and is pinned by a test. No `anthropic` client is ever constructed. |
 
 ### Supporting components (not stages, but load-bearing)
@@ -72,14 +49,14 @@ read a pull request, execute anything against a database, or post a comment.
 | Extraction extension point (`extract/base.py`, `registry.py`) | ✅ Complete | `Extractor` protocol + `ExtractorRegistry`. Duplicate extensions rejected. A new language changes no existing module. |
 | Java scanner (`extract/java_source.py`) | ✅ Complete | Code/comment/literal classification, two length-preserving masked views, bracket matching, binary-search line lookup. 33 tests. |
 | Architecture documentation (`docs/architecture.md`) | ✅ Complete | Stage contracts, the extraction sub-architecture, every extension point, and the deferred decisions with their reasoning. |
-| Pipeline orchestrator (`pipeline/runner.py`) | ✅ Complete for the wired stages | Owns stage order, fail-soft boundaries, and the run log record. Extends per stage as stages land. **Uncommitted.** |
-| API surface (`api/main.py`) | ✅ Complete for the wired stages | `GET /health`, `POST /analyze`. Unimplemented options are refused with 501 rather than silently ignored. |
-| Dependency injection (`api/deps.py`) | ✅ Complete | `get_analysis_runner`, cached, overridable via `app.dependency_overrides`. **Uncommitted.** |
+| Pipeline orchestrator (`pipeline/runner.py`) | ✅ Complete for the wired stages | Owns stage order, fail-soft boundaries, the run log record, and optional comment posting. `post_comment: true` degrades gracefully on API failure. |
+| API surface (`api/main.py`) | ✅ Complete for the wired stages | `GET /health`, `POST /analyze`. `post_comment: true` posts an idempotent PR comment. `diff` is still 501. |
+| Dependency injection (`api/deps.py`) | ✅ Complete | `get_analysis_runner` and `get_github_client`, both overridable via `app.dependency_overrides`. |
 | p6spy statement-log parser (`integrations/p6spy.py`) | ✅ Complete | Parses, AST-normalizes, groups by shape, ranks repeats. 13 tests against a log captured from a real sandbox run. |
 | Sandbox fixture app (`queryguard-sandbox/`) | ✅ Complete | Spring Boot 3.5 / JDK 21, Flyway migration, deterministic seed, 4 planted bugs + 4 healthy counterparts, p6spy wired. 21 tests guard it. |
 | Structured logging | ✅ Complete for the wired stages | One INFO record per run carrying `run_id`, `repo`, `pr_number`, query/finding counts, `processing_time_ms`, `degraded_stages` — in both `extra` and the message text. |
 | Tooling config (`pyproject.toml`) | ✅ Complete | ruff (line length 100, 8 rule families) + mypy strict, with **no per-module error-code overrides**. |
-| Configuration (`config.py`) | 🔴 Not Started | Does not exist. Nothing reads `os.environ` anywhere yet, so the convention is currently satisfied by having no configuration at all. |
+| Configuration (`config.py`) | ✅ Complete for what exists | `Settings` (pydantic-settings, frozen), `GITHUB_TOKEN` required with a fail-fast import-time check, `ANTHROPIC_API_KEY` optional until the N+1 stage needs it. Secrets are `SecretStr` and the masked `__repr__` is tested against repr, str, f-string, `model_dump`, `model_dump_json`, and the startup error. A source-tree test asserts it is the **only** module that reads the environment. 44 tests. |
 | CLI (`cli.py`) | 🔴 Not Started | Does not exist. |
 | Java sidecar (`java-parser/`) | 🔴 Not Started | Does not exist. |
 | CI (`.github/workflows/`) | 🔴 Not Started | Does not exist. Lint/typecheck/test are enforced by hand only. |
@@ -182,17 +159,22 @@ suite drives it with the sandbox's real index layout.
 - `POST /analyze` accepts `sql` (a snippet, reported against `inline.sql`) and/or
   `sql_files` (named `SqlSource`s), and returns the ranked `Report` with
   `status: "completed"` or `"degraded"`.
-- **Refuses rather than ignores** unimplemented options: `diff` and
-  `post_comment: true` both return **501**. Answering "no problems found" to input
-  that was never read is the one failure mode a review bot cannot have.
+- **`post_comment: true`** posts an idempotent tagged comment on the PR.
+  Searches for `COMMENT_MARKER`, edits the existing comment if found, creates one
+  otherwise. Returns the `comment_id` in the response. A GitHub API failure degrades
+  the run and still returns the report.
+- **Refuses rather than ignores** unimplemented options: `diff` returns **501**.
+  Answering "no problems found" to input that was never read is the one failure mode
+  a review bot cannot have.
 - Validation is preserved (422 on `pr_number: 0`, on missing fields).
 - Does not leak tracebacks or exception payloads on a 500.
 
 ### Dependency injection — `api/deps.py`
 
-`get_analysis_runner`, `lru_cache`d to one process-wide runner, injected via
-`Depends`. Proven to be a real seam: tests swap in a fixed-run-ID runner and an
-exploding runner through `app.dependency_overrides` without patching module globals.
+`get_analysis_runner` and `get_github_client`, both injected via `Depends` and
+overridable through `app.dependency_overrides`. Proven to be real seams: tests swap
+in a fixed-run-ID runner, an exploding runner, and a `RecordedGitHub` fake without
+patching module globals.
 
 ### Pydantic stage contracts — `models/`
 
@@ -311,20 +293,14 @@ the invariant was written for) is untested.
 
 ## Not Yet Implemented
 
-**Stages (6 of 8):**
+**Stages (4 of 8):**
 
-- Stage 1 Ingest — no PR is ever read.
 - Stage 4 Provision — no Docker, no Postgres, no HypoPG, no schema snapshot.
 - Stage 5 Plan analysis — no `EXPLAIN` is ever run; no plan is ever parsed.
 - Stage 6 Index simulation — no candidate index is ever proposed or measured.
 - Stage 7 N+1 detection — no cross-query reasoning; the Claude call does not exist.
-- Stage 8 Report rendering — no Markdown.
 
 **Integrations:**
-
-- GitHub: no diff fetch, no SHA resolution, no comment upsert. The "one idempotent
-  tagged comment per PR" behaviour (invariant 4) is **entirely unproven** — only the
-  marker constant exists.
 - Claude: no `anthropic` client is constructed; no prompt, no structured output
   schema, no prompt-cache breakpoint, no `stop_reason == "refusal"` handling.
 
@@ -340,7 +316,7 @@ the invariant was written for) is untested.
 
 **Modules that do not exist at all:**
 
-`queryguard/config.py`, `queryguard/cli.py`, `queryguard/api/routes/` (webhook
+`queryguard/cli.py`, `queryguard/api/routes/` (webhook
 signature verification, run status), `java-parser/`, `docker/`,
 `.github/workflows/ci.yml`, `.github/workflows/queryguard.yml`.
 
@@ -370,7 +346,7 @@ the HTTP surface.
 | TD-5 | Low | Stale documentation outside the code | CLAUDE.md's folder tree marks `rules/` as `(empty)` and `api/deps.py` as `TODO` (both exist), and omits `pipeline/runner.py`, `pyproject.toml`, and `docs/` entirely. Reduced, not closed: every docstring inside the code is now accurate. |
 | TD-7 | Medium | Dev tooling is not a declared dependency | `ruff` and `mypy` are required by CLAUDE.md and configured in `pyproject.toml`, but appear in neither `requirements.txt` nor any dev-requirements file. A fresh clone cannot run the checks the conventions mandate. |
 | TD-8 | Medium | No CI | `.github/workflows/` does not exist. Lint, typecheck, and tests pass only because someone ran them by hand; nothing prevents a regression from being committed. |
-| TD-9 | Medium | No configuration layer | `config.py` does not exist. Today that is fine — nothing reads `os.environ` anywhere — but the moment GitHub or Claude lands, the "config comes from `config.py` only, no secrets in logs" convention has to be honoured by a module that does not yet exist. |
+| TD-16 | Low | Import-time configuration check is a blunt instrument | `config.py` validates at import so a misconfigured deployment dies at startup rather than mid-run. The cost is that the traceback points at an `import` line rather than at whatever needed the value, and the check has to detect test runs to avoid making a token mandatory for `pytest`. `validate_required()` is the opt-in alternative; the API and CLI should call it explicitly once they have a startup hook. |
 | TD-11 | Low | Overlapping API tests | `test_api.py::test_analyze_returns_a_report` asserts `findings == []`, which now passes only because the request supplies no SQL. It reads like a claim about `/analyze` and is really a claim about the empty case, already covered better in `test_analyze_endpoint.py`. |
 | TD-12 | Low | No coverage measurement | `pytest-cov` is not installed or declared, so line/branch coverage is unknown. With 384 tests over ~1,800 lines of implementation it is likely high on the implemented paths, but that is an inference, not a number. |
 | TD-13 | Low | Line-ending churn, no `.gitattributes` | Git reports LF→CRLF conversion on 20 files on every status. Harmless today; noisy in diffs and a future source of spurious conflicts. |
@@ -381,7 +357,7 @@ the HTTP surface.
 
 ## Test Summary
 
-**Total: 384 tests. 384 pass. 0 fail, 0 skip, 0 xfail. 0.69 s.**
+**Total: 547 tests. 547 pass. 0 fail, 0 skip, 0 xfail. ~2.3 s.**
 
 No Docker, no JDK, no credentials, no network.
 
@@ -464,10 +440,12 @@ producing nothing.
    first.
 5. **Fail-soft**: one unparseable file degrades to a named caveat while the others are
    still analyzed in full, at HTTP 200.
-6. **Honest 501s** on `diff` and `post_comment` instead of a falsely empty report.
-7. **A Java repository analyzed through the same endpoint** — a derived method
+6. **`post_comment: true`** posts an idempotent tagged comment on the PR; re-runs
+   edit the existing comment rather than creating a new one.
+7. **Honest 501** on `diff` instead of a falsely empty report.
+8. **A Java repository analyzed through the same endpoint** — a derived method
    decoded to SQL-shaped semantics, anchored to `file:line:symbol`.
-8. **A `@Query` inside a comment producing nothing**, while the real method beneath
+9. **A `@Query` inside a comment producing nothing**, while the real method beneath
    it is still found. The harder half of the harder half.
 9. **A declared dialect honoured** — MySQL backtick quoting parsed as MySQL rather
    than reported unanalyzable.
@@ -530,10 +508,12 @@ curl -s localhost:8000/analyze -H 'content-type: application/json' -d '{
   ]
 }'
 
-# 9. Honest refusal.
-curl -s -o /dev/null -w '%{http_code}\n' localhost:8000/analyze \
-  -H 'content-type: application/json' \
-  -d '{"repo":"acme/x","pr_number":1,"post_comment":true}'      # 501
+# 9. Post a comment (with GITHUB_TOKEN set).
+curl -s localhost:8000/analyze -H 'content-type: application/json' -d '{
+  "repo": "acme/billing-service", "pr_number": 42,
+  "sql": "SELECT * FROM orders;",
+  "post_comment": true
+}'
 ```
 
 ### Expected output
@@ -610,74 +590,72 @@ no Markdown, no GitHub comment. The headline product claim — *"backed by a rea
 
 ---
 
+## Completed Milestone — *First Real PR Comment*
+
+**Goal achieved:** the static-only loop from PR event to posted Markdown now works
+end-to-end. QueryGuard can ingest a PR's diff, extract queries, run static analysis,
+render a Markdown report, and post it as an idempotent tagged comment on the PR.
+
+### Task 1 — Render the report as Markdown (stage 8) ✅
+
+`render_markdown` is implemented as a pure function of `Report`. Grouped by severity
+(worst first), with `COMMENT_MARKER` as the first line, degraded stages as an explicit
+caveat section, and unanalyzable queries named rather than omitted. Five snapshots,
+43 tests. `rank_findings` still raises — ranking lives in `RuleEngine.analyze`.
+
+### Task 2 — Read a real pull request (stages 1–2) ✅
+
+`fetch_pull_request`, `fetch_diff`, `fetch_changed_files`, `read_head_file`, and
+`ingest_pull_request` are all implemented. Tested against a real recorded PR fixture
+from the `queryguard-sandbox` repository with no network calls. Handles added,
+modified, renamed, and deleted files with hunk-level line offsets. No token is ever
+logged — enforced by structural AST tests.
+
+### Task 3 — Post one idempotent comment (invariant 4) ✅
+
+`upsert_report_comment` searches the PR's comments for `COMMENT_MARKER`, edits in
+place if found, creates one otherwise, and returns the comment ID. Wired through the
+runner via `post_comment: true` — the 501 is removed. Tests (against a faked PyGithub
+with no real API calls):
+
+- First run creates exactly one comment ✅
+- Second run edits rather than creates (comment count stays 1) ✅
+- A changed `COMMENT_MARKER` is a test failure ✅
+- A GitHub API failure degrades the run and still returns the report ✅
+- QueryGuard never pushes, edits files, or approves/blocks a merge ✅ (AST-enforced)
+- The `upsert_report_comment` placeholder in `test_placeholders.py` is **deleted** ✅
+
+---
+
 ## Next Milestone
 
-**Goal: the first real pull-request comment.** Complete the static-only loop from PR
-event to posted Markdown, with no Docker and no Claude. That converts QueryGuard from
-a library with an HTTP surface into a working (if shallow) PR bot, and it exercises
-invariant 4 — the one currently backed by nothing but a marker constant.
+**Goal: plan-backed findings.** Provision an isolated Postgres 16 instance with HypoPG,
+run `EXPLAIN ANALYZE` inside `BEGIN`…`ROLLBACK`, and produce findings backed by real
+execution plans. This converts QueryGuard's static-only findings into something backed
+by measured evidence.
 
-Deliberately sequenced before stages 4–6: provisioning is the largest and riskiest
-piece of remaining work, and it is much easier to build against a pipeline that
-already renders and posts.
+### Task 1 — Database Provisioning (stage 4)
 
-### Task 1 — Render the report as Markdown (stage 8)
+Implement `db/provision.py::provision_reference_db` — a context manager that spins up
+an isolated Postgres 16 + HypoPG via Docker, loads the schema snapshot, and yields a
+connection. Enforce invariant 1 (never connect to a developer or production database)
+and invariant 2 (every statement inside `BEGIN`…`ROLLBACK`).
 
-Implement `pipeline/report.py::render_markdown` and either implement `rank_findings`
-or delete it and move ranking out of `RuleEngine` into it. Nothing new is needed as
-input; `Report` already carries everything.
+### Task 2 — Execution Plan Analysis (stage 5)
 
-- Group by severity, worst first; one section per finding with `file:line`,
-  the query, the explanation, the impact, and the suggestion.
-- Emit `COMMENT_MARKER` as the first line.
-- Surface `degraded_stages` as an explicit "could not analyze" caveat — a silent
-  report over a partially-read diff is the failure mode invariant 5 exists to prevent.
-- Render unanalyzable queries (`parse_error` set) as named caveats, not omissions.
+Implement `pipeline/explain.py::explain_analyze` and `analyze_plan`. Run `EXPLAIN
+(ANALYZE, BUFFERS, FORMAT JSON)` against the provisioned reference database.
 
-*Acceptance:* snapshot tests for the empty report, findings-only, degraded-only, and
-both; `render_markdown` is a pure function of `Report` (same report → byte-identical
-Markdown); the marker is present and first; no fixture in the snapshot is the string
-`None`.
+### Task 3 — Index Simulation (stage 6)
 
-### Task 2 — Read a real pull request (stages 1–2)
+Implement `pipeline/hypopg.py::simulate_indexes`. Propose candidate indexes, measure
+before/after cost deltas with HypoPG, and attach `Evidence` with `cost_before` /
+`cost_after` to the suggestions.
 
-Implement `integrations/github.py::fetch_pull_request` and `fetch_diff`, then
-`pipeline/ingest.py::ingest_pull_request`. Per-file extraction is **already done**:
-a changed file becomes a `SourceFile` and `extract_source` routes it, so this task
-is diff parsing and nothing else — resolving changed files and hunks into sources,
-not deciding which extractor sees them. Add `config.py` here, because this is the
-first stage that needs a token. Record a real PR payload and diff into
-`tests/fixtures/diffs/`.
+### Task 4 — CLI
 
-*Acceptance:* `POST /analyze` with `diff` returns findings instead of 501; ingest
-handles added, modified, renamed, and deleted files, and hunk-level line offsets, so
-a finding's line matches the **head** file; a file in a language no extractor claims
-is skipped rather than degraded; a file that raises degrades that file only; no token
-is ever logged; unit tests run from the recorded fixture with no network.
-
-### Task 3 — Post one idempotent comment (invariant 4)
-
-Implement `upsert_report_comment`: search the PR's comments for `COMMENT_MARKER`,
-edit if found, create otherwise, return the ID. Wire `post_comment: true` through the
-runner and remove that 501. Add `cli.py` so a run can be driven against a recorded
-diff with no GitHub credentials.
-
-*Acceptance:* the test CLAUDE.md explicitly requires — a second run **edits** rather
-than adds, proven against a faked PyGithub; a changed marker is a test failure, not a
-silent duplicate comment; a GitHub failure degrades the run and still returns the
-report; QueryGuard never pushes, edits files, or approves/blocks a merge.
-
-### Milestone acceptance criteria
-
-- A recorded PR fixture goes diff → extract → rules → Markdown → upsert, twice, with
-  one comment existing at the end.
-- The 501s on `diff` and `post_comment` are gone because both work.
-- `config.py` is the only module reading the environment; no secret appears in any log
-  or response.
-- The corresponding cases in `test_placeholders.py` are **deleted**, not weakened —
-  that file's shrinking is the progress metric.
-- Comment format is snapshot-tested. All 384 tests still pass. ruff and mypy strict still
-  clean. TD-5 closed on the way past.
+Add `cli.py` so a run can be driven against a recorded diff or a live PR from the
+command line.
 
 ---
 

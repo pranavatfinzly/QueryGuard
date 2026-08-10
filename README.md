@@ -2,7 +2,7 @@
 
 Catches slow and unsafe database queries in code review, before they reach production.
 
-[![tests](https://img.shields.io/badge/tests-384%20passing-brightgreen)](#testing)
+[![tests](https://img.shields.io/badge/tests-547%20passing-brightgreen)](#testing)
 [![python](https://img.shields.io/badge/python-3.11%2B-blue)](#quick-start)
 [![typed](https://img.shields.io/badge/mypy-strict-blue)](#contributing)
 [![status](https://img.shields.io/badge/status-early%20development-orange)](#current-status)
@@ -44,6 +44,9 @@ which half you get today.
 
 ### Available now
 
+- **Pull-request ingest & diff parsing** — read PR diffs via PyGithub, parse unified
+  diff hunks, anchor findings to HEAD files with line offsets, handle added/modified/
+  renamed/deleted files, skip unsupported languages, and degrade per-file gracefully.
 - **SQL extraction** — every statement in a `.sql` file, migration, or snippet,
   parsed with `sqlglot`. Semicolons inside string literals and dollar-quoted function
   bodies are correctly not treated as boundaries.
@@ -75,13 +78,22 @@ which half you get today.
 - **p6spy statement-log analysis** — parses a real statement log, normalizes literals
   via the AST, and isolates an N+1 by shape: 5,000 executions with 5,000 distinct bind
   values, where two queries would have done.
+- **Markdown report rendering** — a pure function of the `Report` model, carrying
+  the `COMMENT_MARKER` as the first line, findings grouped by severity worst-first,
+  degraded stages as explicit caveats above the findings, and snapshot-tested output.
+- **One idempotent PR comment** — `upsert_report_comment` searches for the hidden
+  `COMMENT_MARKER`, edits the existing comment in place if found, or creates one.
+  Re-runs update rather than spam. A GitHub API failure degrades the run and still
+  returns the report. QueryGuard never pushes commits, edits files, or approves/blocks
+  a merge — enforced by AST inspection.
+- **`post_comment: true`** — wired end-to-end through `POST /analyze`. Posts the
+  rendered Markdown report as a PR comment and returns the `comment_id`.
 - **A sandbox with real bugs** — a Spring Boot fixture app carrying four planted
   performance bugs, each beside a healthy counterpart, so rules are tested for false
   positives as well as true ones.
 
 ### Coming soon
 
-- **Pull-request ingest** — read the diff from GitHub instead of being handed SQL.
 - **Further Java / JPA extraction** — `EntityManager` and `Session` calls, named
   queries, and other unsupported annotation forms.
 - **Further Spring Data derived methods** — operators, ordering, limits, distinct,
@@ -92,8 +104,6 @@ which half you get today.
   before/after cost deltas.
 - **N+1 detection** — cross-query reasoning powered by Claude, corroborated by p6spy
   statement counts.
-- **Markdown reports and one idempotent PR comment** — tagged, updated in place, never
-  spamming the thread.
 - **Four more static rules** — deep `OFFSET` paging, `IN` lists that should be joins,
   cartesian products, derived-method fan-out.
 
@@ -117,7 +127,7 @@ contract is an immutable Pydantic model, so a stage cannot edit its input.
               Pull Request
                    │
                    ▼
-   ○  1. Ingest             diff, base/head SHAs
+   ●  1. Ingest             diff, base/head SHAs
                    │
                    ▼
    ◐  2. Extraction         query text + file:line provenance
@@ -138,18 +148,18 @@ contract is an immutable Pydantic model, so a stage cannot edit its input.
    ○  7. AI Explanation     N+1 patterns across the query set
                    │
                    ▼
-   ○  8. Report             findings → ranked Markdown
+   ●  8. Report             findings → ranked Markdown
                    │
                    ▼
-             GitHub Comment  ○  one comment, updated in place
+              GitHub Comment  ●  one comment, updated in place
 ```
 
 `●` implemented and tested  ·  `◐` partial — SQL done, Java/JPQL planned  ·  `○` entry
 point exists, raises `NotImplementedError`
 
-Stages 2 and 3 are wired together behind `POST /analyze` by an orchestrator that owns
-stage order and fail-soft boundaries. Stages 4–8 are not wired, and the pipeline does
-not pretend otherwise: it returns the report those stages would have enriched,
+Stages 1–3 and 8–9 are wired together behind `POST /analyze` by an orchestrator that
+owns stage order and fail-soft boundaries. Stages 4–7 are not wired, and the pipeline
+does not pretend otherwise: it returns the report those stages would have enriched,
 carrying only what the static path could establish.
 
 Stage contracts, extension points, and the reasoning behind each boundary are
@@ -185,12 +195,12 @@ What QueryGuard does today, end to end, with no Docker, JDK, or credentials:
 | Stay silent on healthy queries | `SELECT id, status FROM orders WHERE placed_at >= :since` → nothing |
 | Rank across files | A CRITICAL in the last file outranks a MEDIUM in the first |
 | Degrade instead of failing | One unparseable file is a named caveat; the rest are analyzed |
-| Refuse honestly | `diff` and `post_comment` return **501**, never a falsely empty report |
+| Post an idempotent PR comment | `post_comment: true` edits the existing comment; re-runs don't spam |
+| Refuse honestly | `diff` returns **501**, never a falsely empty report |
 | Isolate an N+1 from a statement log | 5,000 executions, 5,000 distinct binds → one group |
 
-What it **cannot** do yet: read a pull request, execute anything against a database,
-produce an `EXPLAIN` plan, measure index impact, detect N+1 patterns from source,
-render Markdown, or post a comment.
+What it **cannot** do yet: execute anything against a database,
+proroduce an `EXPLAIN` plan, measure index impact, or detect N+1 patterns from source.
 
 ---
 
@@ -199,8 +209,8 @@ render Markdown, or post a comment.
 | Milestone | Scope |
 | --- | --- |
 | **1. Static analysis** ✅ | Rule engine, five rules, extraction, HTTP API, fail-soft pipeline |
-| **2. First real PR comment** | Markdown rendering, GitHub diff ingest, one idempotent tagged comment, CLI |
-| **3. Plan-backed findings** | Dockerized Postgres 16 + HypoPG, `EXPLAIN ANALYZE`, plan inspection, index simulation |
+| **2. First real PR comment** ✅ | Markdown rendering, GitHub diff ingest, one idempotent tagged comment, `post_comment` wired |
+| **3. Plan-backed findings** | Dockerized Postgres 16 + HypoPG, `EXPLAIN ANALYZE`, plan inspection, index simulation, CLI |
 | **4. Java and JPA** | JavaParser sidecar, `@Query`, JPQL/HQL, Spring Data derived methods |
 | **5. AI cross-query analysis** | Claude-powered N+1 detection, corroborated by p6spy statement counts |
 | **6. Production hardening** | Webhook routes with signature verification, CI workflows, reusable GitHub Action |
@@ -230,8 +240,8 @@ queryguard/
 
 queryguard-sandbox/       Spring Boot fixture app with four planted bugs
 tests/
-├── unit/                 384 tests — no Docker, JDK, or credentials
-└── fixtures/             captured p6spy statement logs
+├── unit/                 547 tests — no Docker, JDK, or credentials
+└── fixtures/             captured p6spy logs, recorded PR diffs, report snapshots
 ```
 
 ---
@@ -249,7 +259,7 @@ pip install -r requirements.txt
 Run the tests:
 
 ```bash
-pytest                                    # 384 passed
+pytest                                    # 547 passed
 pytest tests/unit/static_rules/ -v        # just the rule suites
 ```
 
@@ -350,22 +360,23 @@ as `.java`). If one cannot be parsed, the others are still analyzed and the
 response reports `status: "degraded"` with `degraded_stages: ["extract:<path>"]` —
 HTTP 200, never a 500.
 
-`diff` and `post_comment` are accepted by the schema but return **501**: answering "no
+`diff` is accepted by the schema but returns **501**: answering "no
 problems found" to input that was never read is the one failure mode a review bot
-cannot have.
+cannot have. `post_comment: true` posts an idempotent comment on the PR.
 
 ---
 
 ## Testing
 
-**384 tests. All passing. Under a second. No Docker, JDK, credentials, or network.**
+**547 tests. All passing. Under 3 seconds. No Docker, JDK, credentials, or network.**
 
 ```bash
 pytest                                                  # everything
 pytest tests/unit/static_rules/ -v                      # the rule suites (94)
 pytest tests/unit/test_sql_extraction.py -v             # SQL extraction (36)
 pytest tests/unit/test_java_source.py -v                # the Java scanner (33)
-pytest tests/unit/test_analyze_endpoint.py -v           # the HTTP surface (20)
+pytest tests/unit/test_analyze_endpoint.py -v           # the HTTP surface (22)
+pytest tests/unit/test_github_integration.py -v         # GitHub integration (26)
 ```
 
 Every rule ships with a false-positive guard as well as a positive case — usually the
@@ -382,14 +393,14 @@ Tests that need Docker will live behind the `integration` marker declared in
 
 ## Current Status
 
-**Early development — roughly 30% complete.** QueryGuard today performs
+**Early development — roughly 45% complete.** QueryGuard today performs
 production-quality SQL extraction and static analysis behind a working HTTP API, with
-a deterministic, fail-soft pipeline and 384 passing tests. Execution-plan analysis,
-HypoPG index simulation, GitHub integration, Java/JPA extraction, AI-powered N+1
-detection, and Markdown reporting are all under active development — their entry
-points exist and raise `NotImplementedError`, and the API refuses requests that would
-depend on them rather than returning an empty report. Use it today as a SQL analysis
-library or a local service; it is not yet a working PR bot.
+a deterministic, fail-soft pipeline, idempotent PR comment posting, and 547 passing
+tests. Execution-plan analysis, HypoPG index simulation, Java/JPA extraction,
+AI-powered N+1 detection are all under active development — their entry points exist
+and raise `NotImplementedError`, and the API refuses requests that would depend on
+them rather than returning an empty report. Use it today as a SQL analysis library,
+a local service, or a lightweight PR bot for static SQL review.
 
 Engineering detail — per-stage status, technical debt, test breakdown, and the next
 milestone's acceptance criteria — is tracked in [STATUS.md](STATUS.md).

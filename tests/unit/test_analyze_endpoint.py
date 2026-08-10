@@ -15,11 +15,13 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from queryguard.api.deps import get_analysis_runner
+from queryguard.api.deps import get_analysis_runner, get_github_client
 from queryguard.api.main import INLINE_SQL_PATH, AnalyzeResponse, app
+from queryguard.integrations.github import GitHubUnavailable
 from queryguard.models import Report, SourceFile
 from queryguard.pipeline.extract import extract_from_sql
 from queryguard.pipeline.runner import AnalysisRunner
+from tests.conftest import RecordedGitHub
 
 # The sandbox's healthy counterparts: named columns behind an indexed predicate, and
 # a write that is actually scoped. Anything QueryGuard says about these is noise.
@@ -225,7 +227,6 @@ def test_run_ids_are_unique_per_request(client: TestClient) -> None:
     "payload",
     [
         pytest.param({"diff": "--- a/x.sql\n+++ b/x.sql\n"}, id="diff"),
-        pytest.param({"post_comment": True}, id="post_comment"),
     ],
 )
 def test_unimplemented_options_are_refused_rather_than_ignored(
@@ -263,9 +264,14 @@ def test_the_route_uses_the_injected_runner(
             pr_number: int,
             sources: Sequence[SourceFile],
             run_id: str | None = None,
+            **kwargs: Any,
         ) -> Report:
             return super().run(
-                repo=repo, pr_number=pr_number, sources=sources, run_id="fixed-run-id"
+                repo=repo,
+                pr_number=pr_number,
+                sources=sources,
+                run_id="fixed-run-id",
+                **kwargs,
             )
 
     use_runner(FixedRunIdRunner())
@@ -397,3 +403,53 @@ def test_a_declared_dialect_is_honoured_rather_than_dropped(client: TestClient) 
     assert query["dialect"] == "mysql"
     assert query["parse_error"] is None
     assert body["report"]["degraded_stages"] == []
+
+
+def test_post_comment_end_to_end(
+    client: TestClient,
+    recorded_github: RecordedGitHub,
+) -> None:
+    app.dependency_overrides[get_github_client] = lambda: recorded_github.client
+    try:
+        response = client.post(
+            "/analyze",
+            json={
+                "repo": "pranavatfinzly/QueryGuard",
+                "pr_number": 4,
+                "sql": "SELECT * FROM orders",
+                "post_comment": True,
+            },
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["comment_id"] is not None
+        assert len(recorded_github.comments) == 1
+        assert body["status"] == "completed"
+        assert body["report"]["degraded_stages"] == []
+    finally:
+        app.dependency_overrides.pop(get_github_client, None)
+
+
+def test_post_comment_fail_soft(
+    client: TestClient,
+    recorded_github: RecordedGitHub,
+) -> None:
+    recorded_github.raise_on_comment = GitHubUnavailable("403 Forbidden")
+    app.dependency_overrides[get_github_client] = lambda: recorded_github.client
+    try:
+        response = client.post(
+            "/analyze",
+            json={
+                "repo": "pranavatfinzly/QueryGuard",
+                "pr_number": 4,
+                "sql": "SELECT * FROM orders",
+                "post_comment": True,
+            },
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["comment_id"] is None
+        assert body["status"] == "degraded"
+        assert "post_comment" in body["report"]["degraded_stages"]
+    finally:
+        app.dependency_overrides.pop(get_github_client, None)
