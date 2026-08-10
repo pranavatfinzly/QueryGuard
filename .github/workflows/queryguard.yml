@@ -27,6 +27,13 @@ jobs:
       - name: Review pull request
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Path to the checked-out repository's root Liquibase changelog, e.g.
+          # src/main/resources/db/payment-db-changelog.xml for galaxy-payment-service.
+          # Set as a repository (or organization) Actions variable per consumer —
+          # this workflow file does not change per repo. Unset means no schema is
+          # available and every schema-dependent static rule stays silent, exactly
+          # as before this variable existed.
+          LIQUIBASE_CHANGELOG_PATH: ${{ vars.LIQUIBASE_CHANGELOG_PATH }}
         run: >-
           queryguard review
           --repo ${{ github.repository }}

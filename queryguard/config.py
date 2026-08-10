@@ -25,7 +25,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any
 
-from pydantic import SecretStr
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
 
 __all__ = [
@@ -90,6 +90,14 @@ class Settings(BaseSettings):
 
     github_token: SecretStr | None = None
     anthropic_api_key: SecretStr | None = None
+    liquibase_changelog_path: str | None = Field(
+        default=None,
+        description="Path to the repository's root Liquibase changelog (e.g. "
+        "src/main/resources/db/payment-db-changelog.xml), resolved relative to the "
+        "working directory a run analyzes. Unset means no schema is available and "
+        "every schema-dependent static rule stays silent, exactly as before this "
+        "setting existed.",
+    )
 
     @classmethod
     def settings_customise_sources(
