@@ -6,14 +6,17 @@ import argparse
 import re
 import sys
 import traceback
+import uuid
 from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from queryguard.models.report import Report, RunContext
+from queryguard.pipeline.diff import INGEST_STAGE
+
 if TYPE_CHECKING:
     from github import Github
 
-    from queryguard.models.report import Report
     from queryguard.pipeline.runner import AnalysisRunner
 
 _REPOSITORY = re.compile(r"^[^/\s]+/[^/\s]+$")
@@ -73,26 +76,55 @@ def review(
 
     An injected client is the offline seam used by recorded fixtures. In a normal
     invocation, ``new_client`` obtains and validates GitHub configuration.
+
+    A :class:`~queryguard.integrations.github.GitHubUnavailable` from ingestion —
+    GitHub could not be reached, or refused a request, before a single file was
+    read — degrades rather than raises (CLAUDE.md invariant 5): the caller still
+    gets a :class:`Report`, naming the failure, with no queries and no findings
+    rather than either an exception or a comment that could read as "nothing
+    wrong here". Nothing else is caught this broadly. A programming error —
+    ``TypeError``, ``AssertionError``, any bug in extraction or the rule engine —
+    is not GitHub being unavailable, and must still reach the caller: silently
+    degrading those would hide a real QueryGuard failure behind a green check,
+    which is a worse outcome than a loud one.
     """
+    from queryguard.config import get_settings
+    from queryguard.db.liquibase import load_schema_from_settings
     from queryguard.integrations.github import GitHubUnavailable, new_client, upsert_report_comment
     from queryguard.pipeline.ingest import ingest_pull_request
     from queryguard.pipeline.runner import AnalysisRunner
+    from queryguard.pipeline.static_rules import RuleEngine
 
     resolved_client = client if client is not None else new_client()
-    ingested = ingest_pull_request(repo, pr_number, client=resolved_client)
-    resolved_runner = runner if runner is not None else AnalysisRunner()
-    report = resolved_runner.run(
-        repo=ingested.context.repo,
-        pr_number=ingested.context.pr_number,
-        sources=ingested.sources,
-        context=ingested.context,
-        initial_degraded_stages=ingested.degraded_stages,
-    )
+
+    try:
+        ingested = ingest_pull_request(repo, pr_number, client=resolved_client)
+    except GitHubUnavailable as error:
+        # The comment's target is `repo`/`pr_number` alone — already known from
+        # the caller's own arguments, not from anything `ingest_pull_request`
+        # would have resolved. A degraded comment can still be attempted below
+        # even though ingestion itself never got that far.
+        context = RunContext(run_id=str(uuid.uuid4()), repo=repo, pr_number=pr_number)
+        report = Report(context=context, degraded_stages=[f"{INGEST_STAGE}:{error}"])
+    else:
+        if runner is not None:
+            resolved_runner = runner
+        else:
+            schema = load_schema_from_settings(get_settings().liquibase_changelog_path)
+            resolved_runner = AnalysisRunner(engine=RuleEngine(schema=schema))
+        context = ingested.context
+        report = resolved_runner.run(
+            repo=context.repo,
+            pr_number=context.pr_number,
+            sources=ingested.sources,
+            context=context,
+            initial_degraded_stages=ingested.degraded_stages,
+        )
 
     if post_comment and not dry_run:
         # The integration owns the idempotent create-or-update behavior.
         try:
-            upsert_report_comment(ingested.context, report, client=resolved_client)
+            upsert_report_comment(context, report, client=resolved_client)
         except GitHubUnavailable:
             # Posting is optional: retain the useful static report and make the
             # coverage gap visible, matching the runner's fail-soft contract.
