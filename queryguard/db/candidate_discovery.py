@@ -113,22 +113,35 @@ def find_changelog_candidates(
     other unreadable candidate as (see
     :mod:`queryguard.db.discovery`'s own ``_read_candidate``).
 
-    Scoring, evidence-based rather than filename-based:
+    Scoring, evidence-based rather than filename-based, and shaped around
+    what the caller actually needs: not "is this real Liquibase content" (a
+    real changelog chain's children all pass that) but "is this the *root*
+    a caller should hand to :func:`~queryguard.db.liquibase.build_table_schemas_remote`",
+    since walking from anything other than the true root under-reports the
+    schema — a false negative risk, not a merely-incomplete one. A real
+    ``galaxy-payment`` validation run is why this distinction exists: every
+    one of ~40 individual migration patches in its changelog chain is
+    ``<include>``-d by something, so "referenced by another changelog" alone
+    made all of them tie at the same confidence, and the run correctly (but
+    unhelpfully) reported 41-way ambiguity instead of finding the one real
+    root.
 
-    * **Referenced by another valid changelog's ``<include>``** — the
-      strongest signal available without an explicit configuration: something
-      *in the repository itself* names this file as part of its schema.
-    * **Declares real content** (a ``<changeSet>``, or its own ``<include>``/
-      ``<includeAll>``) — a file that is Liquibase-shaped but empty is weaker
-      evidence than one that actually does something.
-    * **Conventional naming** (``changelog``, ``changeset``, ``db-changelog``
-      in the path) — the weakest signal, never sufficient alone; a file named
-      ``changelog.xml`` that is empty and unreferenced is still only LOW.
-
-    A candidate earns :attr:`CandidateConfidence.MEDIUM` if it is referenced
-    by another candidate, or if it both declares real content *and* matches a
-    naming convention — two independently weak signals corroborating each
-    other. Everything else that at least parses as a changelog is LOW.
+    * **Root-shaped** — not referenced by any other candidate (nothing in the
+      tree points *at* it) and itself declares ``<include>``/``<includeAll>``
+      (it points *at* other files). This is the strongest signal: a
+      changelog chain has exactly one node with no incoming reference that
+      aggregates the rest, and that is the file whose recursive walk produces
+      the complete schema. A referenced file — even one that itself includes
+      further children, the way a repository's ``main-ddl.xml`` might — is a
+      child of the real root, not the root itself, and is scored accordingly.
+    * **Standalone and conventionally named** — not referenced by anything,
+      declares its own ``<changeSet>`` content, and its path matches a
+      Liquibase naming convention. The fallback signal for a repository with
+      no aggregator at all: one self-contained changelog nothing points to
+      and nothing points from, corroborated by its name.
+    * Everything else that at least parses as a changelog — including any
+      file another candidate's ``<include>`` names — is LOW: real content,
+      but evidence of being a *child*, not the entry point.
     """
     xml_paths = [path for path in paths if path.lower().endswith(".xml")][:limit]
 
@@ -187,24 +200,36 @@ def _referenced_paths(parsed: dict[str, ET.Element]) -> set[str]:
 
 
 def _score(path: str, root: ET.Element, *, referenced: bool) -> ChangelogCandidate:
-    reasons = ["valid databaseChangeLog root element"]
-    declares_content = any(
-        _local_tag(child) in ("changeSet", "include", "includeAll") for child in root
-    )
+    declares_children = any(_local_tag(child) in ("include", "includeAll") for child in root)
+    declares_changesets = any(_local_tag(child) == "changeSet" for child in root)
     matches_convention = any(hint in path.lower() for hint in _NAMING_HINTS)
+    # In-degree 0 (nothing references it), out-degree > 0 (it references
+    # others): the topology of an aggregator root, not a leaf — see
+    # find_changelog_candidates' docstring for why this replaced
+    # "referenced by another candidate" as the strongest signal.
+    root_shaped = declares_children and not referenced
 
-    if referenced:
-        reasons.append("referenced by another candidate's <include>")
-    if declares_content:
-        reasons.append("declares changeSet/include content")
+    reasons = ["valid databaseChangeLog root element"]
+    if root_shaped:
+        reasons.append(
+            "not referenced by any other candidate, and itself includes others (root-shaped)"
+        )
+    elif referenced:
+        reasons.append("referenced by another candidate's <include> (a child, not a root)")
+    if declares_changesets:
+        reasons.append("declares its own changeSet content")
     if matches_convention:
         reasons.append("path matches conventional Liquibase naming")
 
-    confidence = (
-        CandidateConfidence.MEDIUM
-        if referenced or (declares_content and matches_convention)
-        else CandidateConfidence.LOW
-    )
+    if root_shaped:
+        confidence = CandidateConfidence.MEDIUM
+    elif not referenced and declares_changesets and matches_convention:
+        # No aggregator anywhere in the tree — the fallback signal is a
+        # self-contained changelog nothing points to and nothing points
+        # from, corroborated by its name.
+        confidence = CandidateConfidence.MEDIUM
+    else:
+        confidence = CandidateConfidence.LOW
     return ChangelogCandidate(path=path, confidence=confidence, reasons=tuple(reasons))
 
 

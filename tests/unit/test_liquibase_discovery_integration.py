@@ -504,12 +504,15 @@ def test_no_configuration_anywhere_recovers_via_repository_wide_candidate_search
     # No application.properties/.yml exists in the head tree at all —
     # conventional-location discovery finds nothing (NOT_FOUND) — yet a
     # changelog exists and is unambiguously identifiable from repository
-    # evidence alone (referenced by another changelog's <include>), with no
-    # db.liquibase.change-log declared anywhere.
-    root = "app/master.xml"  # no naming hint: LOW on its own
-    child = "db/changelog/orders.xml"  # referenced by root: MEDIUM regardless
+    # evidence alone: root-shaped (not referenced by anything, itself
+    # includes the child), with no db.liquibase.change-log declared anywhere.
+    root = "app/master.xml"
+    child = "db/changelog/orders.xml"
     head_text = {
-        root: _include(child),
+        # relativeToChangelogFile="true", resolved against root's own
+        # directory ("app") — "../db/changelog/orders.xml" is what actually
+        # resolves to `child`, not `child`'s own repo-relative path.
+        root: _include("../db/changelog/orders.xml"),
         child: _xml(_unindexed_orders_table()),
         "OrderRepository.sql": _CUSTOMER_ID_QUERY_TEXT,
     }
