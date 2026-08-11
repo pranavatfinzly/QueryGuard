@@ -111,6 +111,27 @@ def test_failed_takes_priority_even_conceptually_alongside_no_findings() -> None
     assert result.blocking_findings == []
 
 
+def test_a_blocking_finding_with_zero_queries_and_a_degraded_stage_is_blocked_not_failed() -> None:
+    # A real galaxy-payment run hit exactly this shape: the changed files were
+    # Java services with no @Query/derived methods of their own (so
+    # extraction's queries list is empty), N+1 detection still found a
+    # genuine HIGH finding by reading control flow, and posting the review
+    # then failed (degrading a stage). Zero queries plus a degraded stage
+    # must not be mistaken for "no reliable analysis was possible" once a
+    # finding proves otherwise.
+    report = Report(
+        context=context(),
+        queries=[],
+        findings=[finding(Severity.HIGH)],
+        degraded_stages=["post_review"],
+    )
+
+    result = EnforcementPolicy().evaluate(report)
+
+    assert result.status is EnforcementStatus.BLOCKED
+    assert result.blocking_findings
+
+
 # --- DEGRADED: partial analysis, no blocking finding -------------------------------
 
 

@@ -76,10 +76,15 @@ def test_a_valid_but_bare_databasechangelog_is_low_confidence() -> None:
     assert "valid databaseChangeLog root element" in candidate.reasons
 
 
-# --- Scoring: referenced-by-another-candidate is the strongest signal -------------
+# --- Scoring: root-shaped (unreferenced, aggregates others) is the strongest signal -----
 
 
-def test_a_candidate_referenced_by_another_valid_changelog_is_medium() -> None:
+def test_an_unreferenced_aggregator_is_medium_and_its_referenced_child_is_low() -> None:
+    # Root-shaped (nothing points at it, it points at something) beats merely
+    # being referenced: the root, not the child, is what a caller should walk
+    # to get the complete schema — see the module docstring's real-world
+    # galaxy-payment example, where scoring the referenced child as the
+    # stronger signal made every migration patch in a real chain tie.
     read = _reader(
         {
             "db/root.xml": _changelog(includes=("child.xml",)),
@@ -90,8 +95,50 @@ def test_a_candidate_referenced_by_another_valid_changelog_is_medium() -> None:
     candidates = find_changelog_candidates(["db/root.xml", "db/child.xml"], read)
     by_path = {c.path: c for c in candidates}
 
-    assert by_path["db/child.xml"].confidence is CandidateConfidence.MEDIUM
-    assert "referenced by another candidate's <include>" in by_path["db/child.xml"].reasons
+    assert by_path["db/root.xml"].confidence is CandidateConfidence.MEDIUM
+    assert "root-shaped" in by_path["db/root.xml"].reasons[1]
+    assert by_path["db/child.xml"].confidence is CandidateConfidence.LOW
+    assert "a child, not a root" in by_path["db/child.xml"].reasons[1]
+
+
+def test_a_child_that_itself_includes_others_is_still_not_root_shaped() -> None:
+    # The multi-level case: root -> aggregator -> leaf. The aggregator has
+    # out-edges (it includes the leaf) but is not the root, because
+    # something else (root) references it — in-degree must be zero too.
+    read = _reader(
+        {
+            "db/root.xml": _changelog(includes=("aggregator.xml",)),
+            "db/aggregator.xml": _changelog(includes=("leaf.xml",)),
+            "db/leaf.xml": _changelog(changesets=1),
+        }
+    )
+
+    candidates = find_changelog_candidates(
+        ["db/root.xml", "db/aggregator.xml", "db/leaf.xml"], read
+    )
+    by_path = {c.path: c for c in candidates}
+
+    assert by_path["db/root.xml"].confidence is CandidateConfidence.MEDIUM
+    assert by_path["db/aggregator.xml"].confidence is CandidateConfidence.LOW
+    assert by_path["db/leaf.xml"].confidence is CandidateConfidence.LOW
+
+
+def test_many_children_of_one_root_do_not_all_tie_with_it() -> None:
+    # The exact shape a real galaxy-payment validation run hit: one root
+    # including many independent migration patches. Under the old
+    # "referenced = strong signal" scoring every patch tied with the root at
+    # MEDIUM, producing an unhelpful N-way ambiguity instead of finding the
+    # one real entry point.
+    patches = [f"db/patches/PM-{i}.xml" for i in range(10)]
+    relative_names = tuple(f"patches/PM-{i}.xml" for i in range(10))
+    files = {"db/root.xml": _changelog(includes=relative_names)}
+    files.update({patch: _changelog(changesets=1) for patch in patches})
+    read = _reader(files)
+
+    result = resolve_candidate_discovery(["db/root.xml", *patches], read)
+
+    assert result.status is DiscoveryStatus.DISCOVERED
+    assert result.changelog_path == "db/root.xml"
 
 
 def test_content_plus_naming_convention_together_are_medium_but_neither_alone_is() -> None:
@@ -144,7 +191,9 @@ def test_one_unambiguous_medium_candidate_is_discovered() -> None:
     )
 
     assert result.status is DiscoveryStatus.DISCOVERED
-    assert result.changelog_path == "db/child.xml"
+    # The root, not the referenced child — walking from the child alone
+    # would miss the schema the root's other includes contribute.
+    assert result.changelog_path == "db/root.xml"
     assert result.source_file is not None
     assert "repository fallback" in result.source_file
 
@@ -169,8 +218,9 @@ def test_two_equally_plausible_candidates_are_ambiguous_not_guessed() -> None:
 
 
 def test_a_medium_candidate_wins_over_a_low_one_not_ambiguous() -> None:
-    # A referenced MEDIUM candidate alongside an unrelated LOW one is not a
-    # tie — only candidates at the *best* tier compete for ambiguity.
+    # A root-shaped MEDIUM candidate alongside two LOW candidates (a
+    # referenced child and an unrelated naming-hint-only file) is not a tie
+    # — only candidates at the *best* tier compete for ambiguity.
     read = _reader(
         {
             "db/root.xml": _changelog(includes=("child.xml",)),
@@ -184,4 +234,4 @@ def test_a_medium_candidate_wins_over_a_low_one_not_ambiguous() -> None:
     )
 
     assert result.status is DiscoveryStatus.DISCOVERED
-    assert result.changelog_path == "db/child.xml"
+    assert result.changelog_path == "db/root.xml"
