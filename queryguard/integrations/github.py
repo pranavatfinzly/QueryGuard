@@ -49,7 +49,6 @@ from github.GithubException import GithubException
 from queryguard.models.diff import ChangedFile, ChangeStatus
 from queryguard.models.query import SourceFile
 from queryguard.models.report import Report, RunContext
-from queryguard.policy import ReviewResult
 from queryguard.pipeline.diff import build_sources
 from queryguard.pipeline.extract import ExtractorRegistry
 
@@ -259,7 +258,6 @@ def upsert_report_comment(
     context: RunContext,
     report: Report,
     *,
-    enforcement: ReviewResult | None = None,
     client: Github | None = None,
 ) -> int:
     """Create or update QueryGuard's single comment on the PR.
@@ -272,7 +270,7 @@ def upsert_report_comment(
     """
     from queryguard.pipeline.report import render_markdown
 
-    body = render_markdown(report, enforcement=enforcement)
+    body = render_markdown(report)
     resolved = _resolve(client)
 
     with _guard(f"upserting comment on {context.repo}#{context.pr_number}"):

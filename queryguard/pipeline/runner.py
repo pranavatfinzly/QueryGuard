@@ -47,7 +47,6 @@ from queryguard.integrations.p6spy import StatementGroup
 from queryguard.models.finding import Finding
 from queryguard.models.query import ExtractedQuery, SourceFile
 from queryguard.models.report import Report, RunContext
-from queryguard.policy import EnforcementPolicy, ReviewResult
 from queryguard.pipeline.extract import extract_source
 from queryguard.pipeline.extract.java_structure import ResolveJavaSource
 from queryguard.pipeline.report import DEFAULT_MAX_FINDINGS, cap_findings, rank_findings
@@ -123,43 +122,6 @@ class AnalysisRunner:
         repeated_statements: Sequence[StatementGroup] | None = None,
         resolve_source: ResolveJavaSource | None = None,
     ) -> Report:
-        """Run a review and return its report for backward-compatible callers.
-
-        Call :meth:`run_review` when the deterministic enforcement decision is
-        needed as well. Keeping ``Report`` as this long-standing method's return
-        value avoids making API and library consumers migrate merely because the
-        command-line merge gate gained an additional output.
-        """
-        return self.run_review(
-            repo=repo,
-            pr_number=pr_number,
-            sources=sources,
-            run_id=run_id,
-            context=context,
-            initial_degraded_stages=initial_degraded_stages,
-            post_comment=post_comment,
-            client=client,
-            max_findings=max_findings,
-            repeated_statements=repeated_statements,
-            resolve_source=resolve_source,
-        ).report
-
-    def run_review(
-        self,
-        *,
-        repo: str,
-        pr_number: int,
-        sources: Sequence[SourceFile],
-        run_id: str | None = None,
-        context: RunContext | None = None,
-        initial_degraded_stages: Sequence[str] = (),
-        post_comment: bool = False,
-        client: Github | None = None,
-        max_findings: int = DEFAULT_MAX_FINDINGS,
-        repeated_statements: Sequence[StatementGroup] | None = None,
-        resolve_source: ResolveJavaSource | None = None,
-        enforcement_policy: EnforcementPolicy | None = None,
-    ) -> ReviewResult:
         """Extract queries from ``sources``, apply the static rules, and report.
 
         ``run_id`` is generated unless supplied; callers pass one when the identifier
@@ -201,9 +163,8 @@ class AnalysisRunner:
             *nplusone_degraded,
         ]
 
-        all_findings = rank_findings(findings)
-        findings, omitted_findings = cap_findings(all_findings, max_findings=max_findings)
-        policy = enforcement_policy if enforcement_policy is not None else EnforcementPolicy()
+        findings = rank_findings(findings)
+        findings, omitted_findings = cap_findings(findings, max_findings=max_findings)
 
         comment_id = None
         if post_comment:
@@ -217,12 +178,7 @@ class AnalysisRunner:
                 omitted_findings=omitted_findings,
             )
             try:
-                comment_id = upsert_report_comment(
-                    context,
-                    temp_report,
-                    enforcement=policy.evaluate(temp_report, findings=all_findings),
-                    client=client,
-                )
+                comment_id = upsert_report_comment(context, temp_report, client=client)
             except GitHubUnavailable:
                 degraded_stages.append("post_comment")
 
@@ -251,7 +207,7 @@ class AnalysisRunner:
             },
         )
 
-        report = Report(
+        return Report(
             context=context,
             queries=queries,
             findings=findings,
@@ -259,7 +215,6 @@ class AnalysisRunner:
             comment_id=comment_id,
             omitted_findings=omitted_findings,
         )
-        return policy.evaluate(report, findings=all_findings)
 
     def _extract(
         self, context: RunContext, sources: Sequence[SourceFile]

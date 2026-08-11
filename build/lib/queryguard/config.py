@@ -25,11 +25,10 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any
 
-from pydantic import Field, SecretStr, field_validator
+from pydantic import SecretStr
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
 
 __all__ = [
-    "DEFAULT_GROQ_MODEL",
     "MissingConfiguration",
     "Settings",
     "get_settings",
@@ -37,13 +36,6 @@ __all__ = [
     "reset_settings_cache",
     "validate_required",
 ]
-
-#: The Groq model used when ``GROQ_MODEL`` is unset — including the empty-string
-#: shape a GitHub Actions ``vars.GROQ_MODEL`` renders as when a consumer hasn't
-#: defined it (see :meth:`Settings._default_groq_model_when_blank`). The single
-#: place this string is written; every other reference goes through
-#: :attr:`Settings.groq_model`.
-DEFAULT_GROQ_MODEL = "llama-3.3-70b-versatile"
 
 #: Env var that marks a run as not needing real configuration. Set to ``test`` to
 #: import QueryGuard without a token — for a test run, a lint pass, or ``--help``.
@@ -98,35 +90,6 @@ class Settings(BaseSettings):
 
     github_token: SecretStr | None = None
     anthropic_api_key: SecretStr | None = None
-    groq_api_key: SecretStr | None = None
-    groq_model: str = Field(
-        default=DEFAULT_GROQ_MODEL,
-        description="Groq model used to write N+1 explanation prose. Configurable via "
-        "GROQ_MODEL so the model never has to be hard-coded at a call site.",
-    )
-    liquibase_changelog_path: str | None = Field(
-        default=None,
-        description="Path to the repository's root Liquibase changelog (e.g. "
-        "src/main/resources/db/payment-db-changelog.xml), resolved relative to the "
-        "working directory a run analyzes. Unset means no schema is available and "
-        "every schema-dependent static rule stays silent, exactly as before this "
-        "setting existed.",
-    )
-
-    @field_validator("groq_model", mode="before")
-    @classmethod
-    def _default_groq_model_when_blank(cls, value: object) -> object:
-        """Treat a blank ``GROQ_MODEL`` the same as an unset one.
-
-        A GitHub Actions ``vars.GROQ_MODEL`` renders as the empty string, not as
-        an absent variable, when a consumer hasn't defined it — see
-        ``.github/workflows/queryguard.yml``. Without this, that empty string
-        would silently override :data:`DEFAULT_GROQ_MODEL` and every Groq call
-        would fail with a model name nothing serves.
-        """
-        if isinstance(value, str) and not value.strip():
-            return DEFAULT_GROQ_MODEL
-        return value
 
     @classmethod
     def settings_customise_sources(
@@ -184,16 +147,6 @@ class Settings(BaseSettings):
         not be blocked on a key it will not use.
         """
         return self._require("anthropic_api_key")
-
-    def require_groq_api_key(self) -> str:
-        """The Groq API key, or a clear failure naming what to set.
-
-        Optional everywhere else in the process: a missing key means the N+1
-        explanation stage is skipped, not that QueryGuard fails to run (CLAUDE.md
-        invariant 5). This is for the one caller that has already decided it wants
-        a provider and needs the raw value to construct one.
-        """
-        return self._require("groq_api_key")
 
     def _require(self, field: str) -> str:
         secret: SecretStr | None = getattr(self, field)

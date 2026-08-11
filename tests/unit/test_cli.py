@@ -66,8 +66,7 @@ def test_main_prints_rendered_markdown(
     assert cli.main(["review", "--repo", "acme/billing", "--pr", "1"]) == 0
     assert (
         capsys.readouterr().out
-        == "<!-- queryguard:report -->\n\n## QueryGuard\n\nStatus: PASS\n\n"
-        "✅ QueryGuard found no blocking findings.\n\nNo queries were found in this change.\n"
+        == "<!-- queryguard:report -->\n\n## QueryGuard\n\nNo queries were found in this change.\n"
     )
 
 
@@ -117,7 +116,7 @@ def test_offline_fixture_dry_run_needs_no_token_network_or_writes(
                 str(RECORDED_FIXTURE),
             ]
         )
-        == cli.EXIT_BLOCKED
+        == 0
     )
     rendered = capsys.readouterr().out
     assert rendered.startswith("<!-- queryguard:report -->\n\n## QueryGuard\n")
@@ -165,7 +164,7 @@ def test_comment_failure_is_fail_soft_and_the_report_is_still_printed(
         cli.main(
             ["review", "--repo", pull.repo, "--pr", str(pull.number), "--post-comment", "--no-llm"]
         )
-        == cli.EXIT_BLOCKED
+        == 0
     )
     assert "Not fully analyzed" in capsys.readouterr().out
 

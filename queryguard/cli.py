@@ -23,13 +23,8 @@ if TYPE_CHECKING:
     from queryguard.pipeline.extract.java_structure import ResolveJavaSource
     from queryguard.pipeline.runner import AnalysisRunner
     from queryguard.pipeline.static_rules.schema import SchemaProvider
-    from queryguard.policy import EnforcementPolicy, ReviewResult
 
 logger = logging.getLogger(__name__)
-
-# A deterministic policy violation is an expected review result, distinct from a
-# command/configuration failure (1) and from argparse's own invalid-input status.
-EXIT_BLOCKED = 2
 
 _REPOSITORY = re.compile(r"^[^/\s]+/[^/\s]+$")
 
@@ -332,7 +327,6 @@ def review(
     client: Github | None = None,
     runner: AnalysisRunner | None = None,
     llm_provider: LLMExplanationProvider | None = None,
-    enforcement_policy: EnforcementPolicy | None = None,
 ) -> Report:
     """Orchestrate the existing ingest, analysis, rendering, and comment stages.
 
@@ -360,14 +354,12 @@ def review(
     degrading those would hide a real QueryGuard failure behind a green check,
     which is a worse outcome than a loud one.
     """
-    from queryguard.config import get_settings
     from queryguard.integrations.github import GitHubUnavailable, new_client, upsert_report_comment
     from queryguard.pipeline.ingest import ingest_pull_request
     from queryguard.pipeline.runner import AnalysisRunner
     from queryguard.pipeline.static_rules import RuleEngine
 
     resolved_client = client if client is not None else new_client()
-    policy = enforcement_policy if enforcement_policy is not None else get_settings().enforcement_policy()
 
     try:
         ingested = ingest_pull_request(repo, pr_number, client=resolved_client)
@@ -387,26 +379,19 @@ def review(
             resolved_runner = AnalysisRunner(
                 engine=RuleEngine(schema=schema), llm_provider=llm_provider
             )
-        result = resolved_runner.run_review(
+        report = resolved_runner.run(
             repo=context.repo,
             pr_number=context.pr_number,
             sources=ingested.sources,
             context=context,
             initial_degraded_stages=ingested.degraded_stages,
             resolve_source=_java_source_resolver(context, resolved_client),
-            enforcement_policy=policy,
         )
-        report = result.report
 
     if post_comment and not dry_run:
         # The integration owns the idempotent create-or-update behavior.
         try:
-            upsert_report_comment(
-                context,
-                report,
-                enforcement=policy.evaluate(report),
-                client=resolved_client,
-            )
+            upsert_report_comment(context, report, client=resolved_client)
         except GitHubUnavailable:
             # Posting is optional: retain the useful static report and make the
             # coverage gap visible, matching the runner's fail-soft contract.
@@ -449,11 +434,6 @@ def main(argv: Sequence[str] | None = None) -> int:
 
             llm_provider = create_default_llm_provider()
 
-        from queryguard.config import get_settings
-        from queryguard.pipeline.report import render_markdown
-        from queryguard.policy import EnforcementStatus
-
-        policy = get_settings().enforcement_policy()
         report = review(
             args.repo,
             args.pr,
@@ -461,14 +441,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             dry_run=args.dry_run,
             client=client,
             llm_provider=llm_provider,
-            enforcement_policy=policy,
         )
         # Rendering is deliberately here, after every optional operation, so stdout
         # is always exactly the final report body and never a credential or log.
-        result = policy.evaluate(report)
-        _print_markdown(render_markdown(report, enforcement=result))
-        _print_enforcement_result(result)
-        return EXIT_BLOCKED if result.status is EnforcementStatus.BLOCKED else 0
+        from queryguard.pipeline.report import render_markdown
+
+        _print_markdown(render_markdown(report))
+        return 0
     except Exception as error:
         # GitHub's integration already provides safe, actionable messages. For
         # every other boundary (including configuration import), avoid rendering an
@@ -479,7 +458,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             ("queryguard.config", "MissingConfiguration"),
             ("queryguard.fixtures", "FixtureError"),
             ("queryguard.integrations.github", "GitHubUnavailable"),
-            ("queryguard.policy", "InvalidEnforcementPolicy"),
         }
         if (type(error).__module__, type(error).__name__) in safe_error_types:
             print(f"QueryGuard failed: {error}", file=sys.stderr)
@@ -515,16 +493,6 @@ def _print_markdown(markdown: str) -> None:
         # offline review into a spurious CLI failure.
         sys.stdout.buffer.write(markdown.encode("utf-8"))
         sys.stdout.buffer.flush()
-
-
-def _print_enforcement_result(result: ReviewResult) -> None:
-    """Print the structured merge decision without using prose to make it."""
-    print(f"QueryGuard: {result.status.value}", file=sys.stderr)
-    if not result.blocking_findings:
-        return
-    print(f"Blocking findings: {len(result.blocking_findings)}", file=sys.stderr)
-    for finding in result.blocking_findings:
-        print(f"- {finding.severity.name}: {finding.title}", file=sys.stderr)
 
 
 def entrypoint() -> None:

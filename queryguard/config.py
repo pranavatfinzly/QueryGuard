@@ -28,17 +28,8 @@ from typing import Any
 from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
 
-from queryguard.policy import (
-    DEFAULT_BLOCKING_SEVERITIES,
-    EnforcementPolicy,
-    InvalidEnforcementPolicy,
-    parse_rule_ids,
-    parse_severities,
-)
-
 __all__ = [
     "DEFAULT_GROQ_MODEL",
-    "InvalidEnforcementPolicy",
     "MissingConfiguration",
     "Settings",
     "get_settings",
@@ -70,14 +61,6 @@ REQUIRED_FIELDS: tuple[tuple[str, str, str], ...] = (
         "read pull requests and post the review comment",
     ),
 )
-
-ENFORCEMENT_ENVIRONMENT_FIELDS: dict[str, str] = {
-    "QUERYGUARD_BLOCK_SEVERITIES": "block_severities",
-    "QUERYGUARD_IGNORE_SEVERITIES": "ignore_severities",
-    "QUERYGUARD_BLOCK_RULES": "block_rules",
-    "QUERYGUARD_WARN_RULES": "warn_rules",
-    "QUERYGUARD_IGNORE_RULES": "ignore_rules",
-}
 
 #: Set while a hermetic :class:`Settings` is being built. A ContextVar rather than
 #: a module flag so a test isolating its own settings cannot make a concurrent
@@ -111,7 +94,6 @@ class Settings(BaseSettings):
         extra="ignore",
         frozen=True,
         case_sensitive=False,
-        populate_by_name=True,
     )
 
     github_token: SecretStr | None = None
@@ -129,32 +111,6 @@ class Settings(BaseSettings):
         "working directory a run analyzes. Unset means no schema is available and "
         "every schema-dependent static rule stays silent, exactly as before this "
         "setting existed.",
-    )
-    block_severities: str | None = Field(
-        default=None,
-        validation_alias="QUERYGUARD_BLOCK_SEVERITIES",
-        description="Comma-separated severities that block a pull request. Unset or blank "
-        "defaults to CRITICAL,HIGH.",
-    )
-    ignore_severities: str | None = Field(
-        default=None,
-        validation_alias="QUERYGUARD_IGNORE_SEVERITIES",
-        description="Optional comma-separated severities that never block a pull request.",
-    )
-    block_rules: str | None = Field(
-        default=None,
-        validation_alias="QUERYGUARD_BLOCK_RULES",
-        description="Optional comma-separated rule IDs that block regardless of severity.",
-    )
-    warn_rules: str | None = Field(
-        default=None,
-        validation_alias="QUERYGUARD_WARN_RULES",
-        description="Optional comma-separated rule IDs that are warning-only.",
-    )
-    ignore_rules: str | None = Field(
-        default=None,
-        validation_alias="QUERYGUARD_IGNORE_RULES",
-        description="Optional comma-separated rule IDs that never block.",
     )
 
     @field_validator("groq_model", mode="before")
@@ -214,15 +170,7 @@ class Settings(BaseSettings):
         ``{"GITHUB_TOKEN": "..."}`` — without exporting anything real.
         """
         lowered = {key.lower(): value for key, value in environ.items()}
-        values = {name: lowered[name] for name in cls.model_fields if name in lowered}
-        values.update(
-            {
-                field_name: lowered[env_name.lower()]
-                for env_name, field_name in ENFORCEMENT_ENVIRONMENT_FIELDS.items()
-                if env_name.lower() in lowered
-            }
-        )
-        return cls.isolated(**values)
+        return cls.isolated(**{name: lowered[name] for name in cls.model_fields if name in lowered})
 
     def require_github_token(self) -> str:
         """The GitHub token, or a clear failure naming what to set."""
@@ -246,40 +194,6 @@ class Settings(BaseSettings):
         a provider and needs the raw value to construct one.
         """
         return self._require("groq_api_key")
-
-    def enforcement_policy(self) -> EnforcementPolicy:
-        """Build and validate the one policy used to gate a pull request.
-
-        Values stay raw so normal shell and GitHub Actions syntax
-        (``CRITICAL,HIGH``) works without JSON quoting. Parsing is centralized in
-        :mod:`queryguard.policy`; invalid settings fail before a review can be
-        accidentally treated as a pass.
-        """
-        blocking = DEFAULT_BLOCKING_SEVERITIES
-        if self.block_severities is not None and self.block_severities.strip():
-            blocking = parse_severities(
-                self.block_severities, setting_name="QUERYGUARD_BLOCK_SEVERITIES"
-            )
-        ignored = (
-            frozenset()
-            if self.ignore_severities is None
-            else parse_severities(
-                self.ignore_severities, setting_name="QUERYGUARD_IGNORE_SEVERITIES"
-            )
-        )
-        return EnforcementPolicy(
-            blocking_severities=blocking,
-            ignored_severities=ignored,
-            blocking_rule_ids=parse_rule_ids(
-                self.block_rules, setting_name="QUERYGUARD_BLOCK_RULES"
-            ),
-            warning_rule_ids=parse_rule_ids(
-                self.warn_rules, setting_name="QUERYGUARD_WARN_RULES"
-            ),
-            ignored_rule_ids=parse_rule_ids(
-                self.ignore_rules, setting_name="QUERYGUARD_IGNORE_RULES"
-            ),
-        )
 
     def _require(self, field: str) -> str:
         secret: SecretStr | None = getattr(self, field)

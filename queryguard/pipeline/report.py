@@ -30,7 +30,6 @@ from queryguard.integrations.github import COMMENT_MARKER
 from queryguard.models.finding import Evidence, Finding, Severity, Suggestion
 from queryguard.models.query import ExtractedQuery, QueryKind
 from queryguard.models.report import Report
-from queryguard.policy import EnforcementPolicy, EnforcementStatus, ReviewResult
 
 __all__ = ["DEFAULT_MAX_FINDINGS", "cap_findings", "rank_findings", "render_markdown"]
 
@@ -130,7 +129,7 @@ def cap_findings(
     return findings[:max_findings], len(findings) - max_findings
 
 
-def render_markdown(report: Report, *, enforcement: ReviewResult | None = None) -> str:
+def render_markdown(report: Report) -> str:
     """Render a report as the Markdown body of the PR comment.
 
     The body carries :data:`queryguard.integrations.github.COMMENT_MARKER` as its
@@ -138,34 +137,16 @@ def render_markdown(report: Report, *, enforcement: ReviewResult | None = None) 
 
     Pure: the same report always renders byte-identical Markdown.
     """
-    result = enforcement if enforcement is not None else EnforcementPolicy().evaluate(report)
     queries = _queries_by_id(report.queries)
     unanalyzable = [query for query in report.queries if query.parse_error is not None]
 
-    blocks: list[str] = [
-        COMMENT_MARKER,
-        "## QueryGuard",
-        f"Status: {result.status.value}",
-        _enforcement_summary(result),
-        _summary(report, unanalyzable),
-    ]
+    blocks: list[str] = [COMMENT_MARKER, "## QueryGuard", _summary(report, unanalyzable)]
     blocks.extend(_analysis_basis_note(report, unanalyzable))
     blocks.extend(_degraded_section(report.degraded_stages))
     blocks.extend(_unanalyzable_section(unanalyzable))
-    blocks.extend(_findings_sections(report.findings, queries, result))
+    blocks.extend(_findings_sections(report.findings, queries))
 
     return "\n\n".join(blocks) + "\n"
-
-
-def _enforcement_summary(result: ReviewResult) -> str:
-    """State the merge decision before the informational report details."""
-    if result.status is EnforcementStatus.BLOCKED:
-        count = _count(len(result.blocking_findings), "blocking finding", "blocking findings")
-        verb = "was" if len(result.blocking_findings) == 1 else "were"
-        return (
-            f"🚫 QueryGuard blocked this PR because {count} {verb} detected."
-        )
-    return "✅ QueryGuard found no blocking findings."
 
 
 def _summary(report: Report, unanalyzable: Sequence[ExtractedQuery]) -> str:
@@ -291,32 +272,9 @@ def _unanalyzable_section(unanalyzable: Sequence[ExtractedQuery]) -> list[str]:
 
 
 def _findings_sections(
-    findings: Sequence[Finding], queries: dict[str, ExtractedQuery], result: ReviewResult
+    findings: Sequence[Finding], queries: dict[str, ExtractedQuery]
 ) -> list[str]:
-    """Render blocking and non-blocking findings in separate enforcement sections."""
-    blocks: list[str] = []
-
-    blocking = [
-        finding
-        for finding in findings
-        if result.status is EnforcementStatus.BLOCKED and finding in result.blocking_findings
-    ]
-    warnings = [finding for finding in findings if finding not in blocking]
-
-    if blocking:
-        blocks.append("### Blocking findings")
-        blocks.extend(_severity_sections(blocking, queries, heading_level="####"))
-    if warnings:
-        blocks.append("### Warnings")
-        blocks.extend(_severity_sections(warnings, queries, heading_level="####"))
-
-    return blocks
-
-
-def _severity_sections(
-    findings: Sequence[Finding], queries: dict[str, ExtractedQuery], *, heading_level: str
-) -> list[str]:
-    """Render the severity groups within one enforcement category."""
+    """One section per severity present, worst first."""
     blocks: list[str] = []
 
     for severity, badge, label in _SEVERITY_DISPLAY:
@@ -326,7 +284,7 @@ def _severity_sections(
         if not at_severity:
             continue
 
-        blocks.append(f"{heading_level} {badge} {label}")
+        blocks.append(f"### {badge} {label}")
         for finding in at_severity:
             blocks.extend(_finding_blocks(finding, queries))
 

@@ -19,27 +19,6 @@ from queryguard.models.diff import (
     SkipReason,
 )
 from queryguard.models.finding import Evidence, Finding, Severity, Suggestion
-from queryguard.models.java_structure import (
-    ArgumentDependency,
-    EntityRelationship,
-    InjectionKind,
-    IterationContext,
-    IterationKind,
-    JavaFileStructure,
-    JavaProgram,
-    LazyAssociationAccess,
-    RepositoryCallSite,
-    RepositoryDeclaration,
-    RepositoryResolution,
-    SourceSpan,
-)
-from queryguard.models.nplusone import (
-    EvidenceTier,
-    NPlusOneCandidate,
-    NPlusOneExplanation,
-    NPlusOneKind,
-    RuntimeCorroboration,
-)
 from queryguard.models.query import (
     ExtractedQuery,
     Hunk,
@@ -51,39 +30,22 @@ from queryguard.models.query import (
 from queryguard.models.report import Report, RunContext
 
 __all__ = [
-    "ArgumentDependency",
     "ChangeStatus",
     "ChangedFile",
     "Contract",
     "DiffIngest",
-    "EntityRelationship",
     "Evidence",
-    "EvidenceTier",
     "ExtractedQuery",
     "Finding",
     "Hunk",
-    "InjectionKind",
-    "IterationContext",
-    "IterationKind",
-    "JavaFileStructure",
-    "JavaProgram",
-    "LazyAssociationAccess",
-    "NPlusOneCandidate",
-    "NPlusOneExplanation",
-    "NPlusOneKind",
     "Provenance",
     "QueryKind",
     "Report",
-    "RepositoryCallSite",
-    "RepositoryDeclaration",
-    "RepositoryResolution",
     "RunContext",
-    "RuntimeCorroboration",
     "Severity",
     "SkipReason",
     "SkippedFile",
     "SourceFile",
-    "SourceSpan",
     "SqlSource",
     "Suggestion",
 ]

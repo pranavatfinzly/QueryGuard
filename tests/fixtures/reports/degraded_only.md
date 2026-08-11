@@ -2,10 +2,6 @@
 
 ## QueryGuard
 
-Status: PASS
-
-✅ QueryGuard found no blocking findings.
-
 Found 1 query, none of which could be reviewed. **Part of this change could not be reviewed — see below.**
 
 ### ⚠️ Not fully analyzed
