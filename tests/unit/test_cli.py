@@ -298,17 +298,50 @@ def test_unrecoverable_configuration_error_returns_nonzero(
     assert "secret" not in capsys.readouterr().err
 
 
-def test_debug_reports_an_import_error_traceback_without_changing_normal_output(
+def test_import_error_message_and_traceback_are_always_reported(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    # ImportError (including ModuleNotFoundError) messages only ever name a
+    # module or symbol, never request/response data or a configured secret, so
+    # this is always safe to show — no --debug required. This is what turns a
+    # bare "ModuleNotFoundError" in CI into something actionable.
     missing = ImportError("cannot import name 'MissingThing' from 'queryguard.example'")
     monkeypatch.setattr(cli, "review", lambda *args, **kwargs: (_ for _ in ()).throw(missing))
 
     assert cli.main(["review", "--repo", "acme/billing", "--pr", "1"]) == 1
-    assert "MissingThing" not in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "QueryGuard failed: ImportError: cannot import name 'MissingThing'" in err
+    assert "Traceback (most recent call last):" in err
+
+
+def test_module_not_found_error_message_and_traceback_are_always_reported(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    missing = ModuleNotFoundError("No module named 'groq'")
+    monkeypatch.setattr(cli, "review", lambda *args, **kwargs: (_ for _ in ()).throw(missing))
+
+    assert cli.main(["review", "--repo", "acme/billing", "--pr", "1"]) == 1
+    err = capsys.readouterr().err
+    assert "QueryGuard failed: ModuleNotFoundError: No module named 'groq'" in err
+    assert "Traceback (most recent call last):" in err
+
+
+def test_debug_reports_an_arbitrary_exception_traceback_only_when_passed(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Unlike ImportError, an arbitrary third-party exception's message could
+    # embed secret-bearing context (e.g. a URL or header), so it stays behind
+    # the explicit --debug opt-in rather than being shown unconditionally.
+    broken = RuntimeError("request to https://example.com/?token=shh failed")
+    monkeypatch.setattr(cli, "review", lambda *args, **kwargs: (_ for _ in ()).throw(broken))
+
+    assert cli.main(["review", "--repo", "acme/billing", "--pr", "1"]) == 1
+    assert "token=shh" not in capsys.readouterr().err
 
     assert cli.main(["review", "--repo", "acme/billing", "--pr", "1", "--debug"]) == 1
-    assert "cannot import name 'MissingThing'" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "token=shh" in err
+    assert "Traceback (most recent call last):" in err
 
 
 def test_cli_only_orchestrates_existing_pipeline_components() -> None:

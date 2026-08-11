@@ -461,12 +461,23 @@ def main(argv: Sequence[str] | None = None) -> int:
         }
         if (type(error).__module__, type(error).__name__) in safe_error_types:
             print(f"QueryGuard failed: {error}", file=sys.stderr)
+        elif isinstance(error, ImportError):
+            # ImportError (including ModuleNotFoundError) messages name a missing
+            # module or symbol, never request/response data or configured
+            # secrets, so the message and traceback are always safe to show —
+            # unconditionally, not just under --debug. This is what turns an
+            # opaque "ModuleNotFoundError" in CI into something actionable (e.g.
+            # a package declared in requirements.txt but missing from
+            # pyproject.toml's install dependencies, which `pip install
+            # git+...` builds from instead).
+            print(f"QueryGuard failed: {type(error).__name__}: {error}", file=sys.stderr)
+            traceback.print_exception(type(error), error, error.__traceback__, file=sys.stderr)
         else:
             print(f"QueryGuard failed: {type(error).__name__}", file=sys.stderr)
-            if args.debug and isinstance(error, ImportError):
-                # ImportError messages name modules/symbols, not credentials. Keep
-                # debug deliberately narrow so an arbitrary third-party exception
-                # never receives an opportunity to render secret-bearing context.
+            if args.debug:
+                # Deliberately opt-in only: an arbitrary third-party exception's
+                # message could embed secret-bearing context (e.g. a URL or
+                # header), unlike ImportError above.
                 traceback.print_exception(type(error), error, error.__traceback__, file=sys.stderr)
         return 1
 
