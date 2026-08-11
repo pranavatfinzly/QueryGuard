@@ -51,6 +51,7 @@ from queryguard.pipeline.extract import extract_source
 from queryguard.pipeline.extract.java_structure import ResolveJavaSource
 from queryguard.pipeline.report import DEFAULT_MAX_FINDINGS, cap_findings, rank_findings
 from queryguard.pipeline.static_rules import RuleEngine
+from queryguard.policy import EnforcementPolicy, ReviewResult
 
 if TYPE_CHECKING:
     from github import Github
@@ -124,6 +125,46 @@ class AnalysisRunner:
     ) -> Report:
         """Extract queries from ``sources``, apply the static rules, and report.
 
+        A thin wrapper over :meth:`run_review` for callers that only want the
+        :class:`~queryguard.models.report.Report` — the FastAPI ``/analyze``
+        route and the existing test suite, both of which predate the
+        deterministic enforcement decision and have no reason to change
+        return type just because :mod:`queryguard.cli` gained one. See
+        :meth:`run_review` for every parameter's meaning.
+        """
+        return self.run_review(
+            repo=repo,
+            pr_number=pr_number,
+            sources=sources,
+            run_id=run_id,
+            context=context,
+            initial_degraded_stages=initial_degraded_stages,
+            post_comment=post_comment,
+            client=client,
+            max_findings=max_findings,
+            repeated_statements=repeated_statements,
+            resolve_source=resolve_source,
+        ).report
+
+    def run_review(
+        self,
+        *,
+        repo: str,
+        pr_number: int,
+        sources: Sequence[SourceFile],
+        run_id: str | None = None,
+        context: RunContext | None = None,
+        initial_degraded_stages: Sequence[str] = (),
+        post_comment: bool = False,
+        client: Github | None = None,
+        max_findings: int = DEFAULT_MAX_FINDINGS,
+        repeated_statements: Sequence[StatementGroup] | None = None,
+        resolve_source: ResolveJavaSource | None = None,
+        enforcement_policy: EnforcementPolicy | None = None,
+    ) -> ReviewResult:
+        """Extract queries from ``sources``, apply the static rules, and report,
+        plus the deterministic PASS/BLOCKED/DEGRADED/FAILED decision.
+
         ``run_id`` is generated unless supplied; callers pass one when the identifier
         comes from elsewhere (a webhook delivery ID, a test fixture). ``max_findings``
         bounds the comment's length; findings beyond it are still found and ranked,
@@ -134,6 +175,23 @@ class AnalysisRunner:
         against, and a way to read a repository interface the pull request did not
         change. Omitting either narrows what that stage can conclude — never what
         the other stages do.
+
+        ``enforcement_policy`` defaults to :class:`~queryguard.policy.EnforcementPolicy`'s
+        own default (CRITICAL/HIGH block) rather than reading process
+        configuration — this class stays constructible with no configuration
+        at all, matching ``llm_provider``'s existing convention. The policy
+        is evaluated against every ranked finding, before ``max_findings``
+        truncates what the comment shows: a blocking finding ranked 21st in a
+        20-item comment must still block (:mod:`queryguard.policy`'s own
+        docstring explains why).
+
+        ``post_comment`` still posts a plain issue comment via
+        :func:`~queryguard.integrations.github.upsert_report_comment`,
+        unrelated to the enforcement decision — this is the FastAPI
+        ``/analyze`` route's existing behavior, predating
+        :func:`~queryguard.integrations.github.upsert_review`, which
+        :mod:`queryguard.cli` calls itself once it has this method's
+        :class:`~queryguard.policy.ReviewResult`.
         """
         started = time.perf_counter()
         context = (
@@ -163,8 +221,9 @@ class AnalysisRunner:
             *nplusone_degraded,
         ]
 
-        findings = rank_findings(findings)
-        findings, omitted_findings = cap_findings(findings, max_findings=max_findings)
+        all_findings = rank_findings(findings)
+        findings, omitted_findings = cap_findings(all_findings, max_findings=max_findings)
+        policy = enforcement_policy if enforcement_policy is not None else EnforcementPolicy()
 
         comment_id = None
         if post_comment:
@@ -207,7 +266,7 @@ class AnalysisRunner:
             },
         )
 
-        return Report(
+        report = Report(
             context=context,
             queries=queries,
             findings=findings,
@@ -215,6 +274,7 @@ class AnalysisRunner:
             comment_id=comment_id,
             omitted_findings=omitted_findings,
         )
+        return policy.evaluate(report, findings=all_findings)
 
     def _extract(
         self, context: RunContext, sources: Sequence[SourceFile]

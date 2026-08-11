@@ -1,14 +1,22 @@
-"""PyGithub wrapper — diff retrieval and idempotent comment upsert.
+"""PyGithub wrapper — diff retrieval, review upsert, and comment upsert.
 
-Two things this module owns:
+Three things this module owns:
 
 - Fetching the PR diff and base/head SHAs.
-- Upserting a single **idempotent, tagged** Markdown comment. The comment carries
-  :data:`COMMENT_MARKER` as an HTML comment so re-runs edit the existing comment
-  instead of spamming the thread.
+- Upserting a single **idempotent, tagged** GitHub Pull Request Review — the
+  product's primary output (CLAUDE.md invariant 3/4). :func:`upsert_review`
+  creates, edits in place, or dismisses-and-recreates QueryGuard's own review,
+  identified by :data:`REVIEW_MARKER`, with ``REQUEST_CHANGES`` when a
+  blocking finding exists and ``COMMENT`` otherwise — never ``APPROVE``.
+- Upserting a single **idempotent, tagged** Markdown *comment*
+  (:func:`upsert_report_comment`), kept as a narrower building block some
+  callers may still want; :data:`COMMENT_MARKER` and :data:`REVIEW_MARKER`
+  are deliberately distinct strings, since a comment and a review are
+  different GitHub objects with independent idempotency.
 
-QueryGuard comments only. It never pushes commits, edits files, or
-approves/blocks a merge.
+QueryGuard's only write actions against a pull request are its own review and
+its own comment. It never pushes commits, edits files, merges, or touches
+another actor's review or comment.
 
 Keeping the token out of everything
 -----------------------------------
@@ -44,25 +52,35 @@ import uuid
 from typing import Literal
 
 from github import Auth, Github
-from github.GithubException import GithubException
+from github.GithubException import GithubException, RateLimitExceededException
+from github.PullRequest import PullRequest
+from github.PullRequestReview import PullRequestReview
 
 from queryguard.models.diff import ChangedFile, ChangeStatus
 from queryguard.models.query import SourceFile
 from queryguard.models.report import Report, RunContext
 from queryguard.pipeline.diff import build_sources
 from queryguard.pipeline.extract import ExtractorRegistry
+from queryguard.policy import EnforcementStatus, ReviewResult
 
 __all__ = [
     "COMMENT_MARKER",
+    "REVIEW_MARKER",
+    "FileNotFoundAtRef",
     "GitHubUnavailable",
+    "InvalidRef",
+    "PermissionDenied",
+    "TransientGitHubError",
     "fetch_changed_files",
     "fetch_diff",
     "fetch_pull_request",
+    "list_files_at_ref",
     "new_client",
     "read_file_at_ref",
     "read_head_file",
     "redact",
     "upsert_report_comment",
+    "upsert_review",
 ]
 
 logger = logging.getLogger(__name__)
@@ -70,6 +88,48 @@ logger = logging.getLogger(__name__)
 #: Hidden marker identifying QueryGuard's own comment. Changing it orphans every
 #: comment already posted, so a re-run would add a second one instead of editing.
 COMMENT_MARKER = "<!-- queryguard:report -->"
+
+#: Hidden marker identifying QueryGuard's own Pull Request Review. Distinct
+#: from :data:`COMMENT_MARKER` — a review and a comment are different GitHub
+#: objects, each with its own idempotency, and this module never mixes them
+#: up when searching for "the" existing one of either kind.
+REVIEW_MARKER = "<!-- queryguard:review -->"
+
+#: The event QueryGuard submits a review with, per status. Never "APPROVE" —
+#: CLAUDE.md invariant 3. FAILED maps to "COMMENT", not "REQUEST_CHANGES":
+#: an infrastructure failure that prevented reliable analysis is not evidence
+#: of a real problem in the pull request, so it must never read as a
+#: substantive blocking decision.
+_EVENT_FOR_STATUS: dict[EnforcementStatus, str] = {
+    EnforcementStatus.BLOCKED: "REQUEST_CHANGES",
+    EnforcementStatus.PASS: "COMMENT",
+    EnforcementStatus.DEGRADED: "COMMENT",
+    EnforcementStatus.FAILED: "COMMENT",
+}
+
+#: The ``review.state`` GitHub reports back for each event this module ever
+#: submits (see :data:`_EVENT_FOR_STATUS` — never "APPROVE", so no entry for
+#: it here) — not the same strings as the event itself (``"COMMENT"`` in,
+#: ``"COMMENTED"`` state out). Used to tell "the existing review already
+#: reflects this verdict, edit it in place" from "the verdict changed,
+#: something must be dismissed or recreated".
+_STATE_FOR_EVENT: dict[str, str] = {
+    "REQUEST_CHANGES": "CHANGES_REQUESTED",
+    "COMMENT": "COMMENTED",
+}
+
+#: States GitHub's own REST API will let a review be dismissed from. A
+#: ``COMMENTED``-state review cannot be dismissed at all — this is GitHub's
+#: constraint, not a QueryGuard choice — which is why :func:`upsert_review`
+#: falls back to creating a fresh review rather than dismissing in that case.
+_DISMISSIBLE_STATES = frozenset({"CHANGES_REQUESTED", "APPROVED"})
+
+#: States that do not count as "the" existing QueryGuard review when searching
+#: for one to update: ``PENDING`` is an unsubmitted draft (unreachable through
+#: this module, which always submits with an event, but defensive rather than
+#: assumed), and ``DISMISSED`` is already inert — treating it as absent means
+#: a dismissed review is replaced by a fresh one rather than edited back to life.
+_INACTIVE_REVIEW_STATES = frozenset({"PENDING", "DISMISSED"})
 
 #: What a redacted secret is replaced with. A fixed string, not a length-preserving
 #: mask: how long a token is, is itself something an attacker does not have to guess.
@@ -86,10 +146,51 @@ _TOKEN_SHAPED = re.compile(r"gh[pousr]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{
 class GitHubUnavailable(RuntimeError):
     """GitHub could not be reached, or refused a request.
 
-    Deliberately the only exception type this module raises outward. Callers get
-    one thing to catch and a message QueryGuard wrote, rather than whatever the
-    HTTP stack of the day happened to put in a string.
+    Deliberately the only exception type every caller *needs* to catch — every
+    subclass below is-a :class:`GitHubUnavailable`, so existing
+    ``except GitHubUnavailable`` call sites keep working unchanged. The
+    subclasses exist for callers, current or future, that want to react
+    differently to *why* GitHub was unavailable (a 404 while speculatively
+    resolving a type is routine; a 401 never is) without parsing the message
+    string to find out.
     """
+
+
+class FileNotFoundAtRef(GitHubUnavailable):
+    """The requested resource does not exist at the given ref (HTTP 404).
+
+    Not necessarily a problem: a 404 while speculatively resolving a
+    repository interface's path from a naming convention
+    (:mod:`queryguard.cli`'s ``_java_source_resolver``) or while probing a
+    Liquibase discovery candidate (:mod:`queryguard.db.discovery`) is an
+    expected, routine outcome, not an infrastructure failure — see
+    :class:`_guard`'s logging, which reflects that.
+    """
+
+
+class PermissionDenied(GitHubUnavailable):
+    """The token was rejected or lacks access (HTTP 401/403)."""
+
+
+class InvalidRef(GitHubUnavailable):
+    """The given ref (SHA/branch) could not be resolved (HTTP 422)."""
+
+
+class TransientGitHubError(GitHubUnavailable):
+    """A failure a retry might not repeat: GitHub 5xx or a connection problem."""
+
+
+#: HTTP status -> the classification :class:`_guard` raises for it. Anything not
+#: listed here (including 404 on a repository/PR lookup, which behaves the same
+#: as any other "not found") still raises the base :class:`GitHubUnavailable`
+#: with the same message — only classification-dependent behavior (a narrower
+#: ``except``, the log level below) uses this table.
+_STATUS_CLASSIFICATION: dict[int, type[GitHubUnavailable]] = {
+    401: PermissionDenied,
+    403: PermissionDenied,
+    404: FileNotFoundAtRef,
+    422: InvalidRef,
+}
 
 
 def redact(text: str) -> str:
@@ -202,7 +303,7 @@ def read_file_at_ref(
     describe two different trees.
     """
     resolved = _resolve(client)
-    with _guard(f"reading {path} at {ref[:8]}"):
+    with _guard(f"reading {path} at {ref[:8]}", path=path, ref=ref):
         contents = resolved.get_repo(context.repo).get_contents(path, ref=ref)
         if isinstance(contents, list):
             # A directory. Nothing in a changed-files list should resolve to one,
@@ -210,6 +311,39 @@ def read_file_at_ref(
             msg = f"{path} is a directory at {ref[:8]}, not a file"
             raise GitHubUnavailable(msg)
         return contents.decoded_content.decode("utf-8", errors="replace")
+
+
+def list_files_at_ref(context: RunContext, *, ref: str, client: Github | None = None) -> list[str]:
+    """Every file path in the repository tree at commit ``ref``, one API call.
+
+    Deliberately used in exactly one place: Liquibase discovery's repository-wide
+    candidate search (:mod:`queryguard.db.candidate_discovery`), reached only
+    once the narrow, conventional-location discovery in
+    :mod:`queryguard.db.discovery` has already failed. The primary discovery
+    path stays exactly as targeted as
+    ``docs/liquibase-schema-discovery.md`` documents — a handful of reads, never
+    a repository scan; this function exists for the fallback that scan
+    deliberately is.
+
+    ``Repository.get_git_tree(sha, recursive=True)`` returns the whole tree —
+    blobs and directories both — in one request rather than one per file, so
+    only blob (file) paths are returned here.
+    """
+    resolved = _resolve(client)
+    with _guard(f"listing the repository tree at {ref[:8]}", ref=ref):
+        tree = resolved.get_repo(context.repo).get_git_tree(ref, recursive=True)
+        if tree.truncated:
+            # GitHub truncates a very large tree (its own size ceiling, not
+            # ours) rather than erroring. Fail-soft: candidate search still
+            # runs over whatever it got, just possibly incomplete — worth
+            # knowing about, not worth failing the run over.
+            logger.warning(
+                "github: repository tree at %s was truncated by GitHub's API; "
+                "Liquibase candidate search may miss files",
+                ref[:8],
+                extra={"repo": context.repo, "ref": ref},
+            )
+        return [entry.path for entry in tree.tree if entry.type == "blob"]
 
 
 def read_head_file(context: RunContext, path: str, *, client: Github | None = None) -> str:
@@ -307,6 +441,193 @@ def upsert_report_comment(
         return created.id
 
 
+def upsert_review(
+    context: RunContext,
+    result: ReviewResult,
+    *,
+    client: Github | None = None,
+) -> int:
+    """Create or update QueryGuard's single Pull Request Review.
+
+    ``REQUEST_CHANGES`` when ``result.status`` is BLOCKED, ``COMMENT``
+    otherwise — never ``APPROVE`` (CLAUDE.md invariant 3). Searches the PR's
+    reviews for one carrying :data:`REVIEW_MARKER`, and picks a strategy
+    around GitHub's own constraint that a ``COMMENTED``-state review cannot be
+    dismissed through the API at all (only ``CHANGES_REQUESTED``/``APPROVED``
+    can):
+
+    - No prior marked review -> create one.
+    - A prior marked review whose state already matches the new verdict ->
+      edit its body in place. The common case on every rerun with an
+      unchanged verdict, and the only case that keeps the *same* review
+      object rather than creating a new one.
+    - A prior ``CHANGES_REQUESTED`` review and the verdict changed -> dismiss
+      it (naming why), then create a new review with the current verdict.
+    - A prior ``COMMENTED`` review and the verdict changed to
+      ``REQUEST_CHANGES`` -> cannot dismiss; create a new review. The stale
+      ``COMMENTED`` review is left as inert history — it never blocked the
+      merge and still does not — rather than actively misleading, which is
+      the safest strategy GitHub's own API limits actually allow.
+
+    Invariant 4 (CLAUDE.md): one *active* QueryGuard review always exists
+    after this returns, never more than one produced by the same call.
+    """
+    from queryguard.pipeline.report import render_markdown
+
+    body = render_markdown(result.report, enforcement=result)
+    event = _EVENT_FOR_STATUS[result.status]
+    resolved = _resolve(client)
+
+    with _guard(f"upserting review on {context.repo}#{context.pr_number}"):
+        pull = resolved.get_repo(context.repo).get_pull(context.pr_number)
+        existing, orphaned = _find_review(pull)
+
+        for stale in orphaned:
+            logger.warning(
+                "github: more than one QueryGuard review found on %s#%d; %d orphaned",
+                context.repo,
+                context.pr_number,
+                len(orphaned),
+                extra={
+                    "repo": context.repo,
+                    "pr_number": context.pr_number,
+                    "orphaned_review_id": stale.id,
+                },
+            )
+
+        if existing is None:
+            created = pull.create_review(body=body, event=event)
+            logger.info(
+                "github: created review %d (%s) on %s#%d",
+                created.id,
+                event,
+                context.repo,
+                context.pr_number,
+                extra={
+                    "review_id": created.id,
+                    "event": event,
+                    "repo": context.repo,
+                    "pr_number": context.pr_number,
+                },
+            )
+            return created.id
+
+        if existing.state == _STATE_FOR_EVENT[event]:
+            existing.edit(body)
+            logger.info(
+                "github: edited existing review %d on %s#%d",
+                existing.id,
+                context.repo,
+                context.pr_number,
+                extra={
+                    "review_id": existing.id,
+                    "event": event,
+                    "repo": context.repo,
+                    "pr_number": context.pr_number,
+                },
+            )
+            return existing.id
+
+        if existing.state in _DISMISSIBLE_STATES:
+            existing.dismiss(f"Superseded by a newer QueryGuard review — {result.status.value}.")
+            logger.info(
+                "github: dismissed review %d (%s -> %s) on %s#%d",
+                existing.id,
+                existing.state,
+                event,
+                context.repo,
+                context.pr_number,
+                extra={
+                    "review_id": existing.id,
+                    "previous_state": existing.state,
+                    "event": event,
+                    "repo": context.repo,
+                    "pr_number": context.pr_number,
+                },
+            )
+        # else: existing.state == "COMMENTED", which GitHub's API will not
+        # let this module dismiss. Falling through to create a new review is
+        # the documented, safest-available strategy — see the docstring.
+
+        created = pull.create_review(body=body, event=event)
+        logger.info(
+            "github: created review %d (%s) on %s#%d, superseding %d",
+            created.id,
+            event,
+            context.repo,
+            context.pr_number,
+            existing.id,
+            extra={
+                "review_id": created.id,
+                "event": event,
+                "superseded_review_id": existing.id,
+                "repo": context.repo,
+                "pr_number": context.pr_number,
+            },
+        )
+        return created.id
+
+
+def _find_review(pull: PullRequest) -> tuple[PullRequestReview | None, list[PullRequestReview]]:
+    """QueryGuard's own active review, and any others found orphaned.
+
+    The most recently submitted active, marked review is authoritative; older
+    ones (should not normally occur — one call always leaves at most one
+    active) are returned separately so the caller can log them rather than
+    silently picking one.
+    """
+    marked = [
+        review
+        for review in pull.get_reviews()
+        if REVIEW_MARKER in (review.body or "") and review.state not in _INACTIVE_REVIEW_STATES
+    ]
+    if not marked:
+        return None, []
+    marked.sort(key=lambda review: (review.submitted_at, review.id))
+    return marked[-1], marked[:-1]
+
+
+#: Human-readable name for each classification, used in the structured log
+#: field so a log consumer does not have to reverse-engineer it from the
+#: exception's class name.
+_CLASSIFICATION_NAME: dict[type[GitHubUnavailable], str] = {
+    FileNotFoundAtRef: "not_found",
+    PermissionDenied: "permission_denied",
+    InvalidRef: "invalid_ref",
+    TransientGitHubError: "transient",
+    GitHubUnavailable: "unclassified",
+}
+
+
+def _classify(error: BaseException) -> tuple[type[GitHubUnavailable], int | None]:
+    """The exception type to raise and the HTTP status, if any, behind it.
+
+    Rate limiting is classified as transient rather than as a permission
+    problem despite arriving as HTTP 403 — the token is fine, the request
+    might simply succeed on retry after the window resets, which is a
+    materially different fact for a caller (or a future retry policy) to act
+    on than "this token cannot do this".
+
+    A non-:class:`GithubException` failure that is-a :class:`OSError` (a
+    socket error, a connection reset, ``requests``' own exception hierarchy,
+    which descends from it) is transient for the same reason; anything else
+    unfamiliar stays unclassified — see :class:`GitHubUnavailable`'s
+    docstring for why guessing further would be worse than saying so.
+    """
+    if isinstance(error, RateLimitExceededException):
+        return TransientGitHubError, error.status
+    if isinstance(error, GithubException):
+        status = error.status
+        if status in _STATUS_CLASSIFICATION:
+            return _STATUS_CLASSIFICATION[status], status
+        if 500 <= status < 600:
+            return TransientGitHubError, status
+        return GitHubUnavailable, status
+    if isinstance(error, OSError):
+        return TransientGitHubError, None
+    return GitHubUnavailable, None
+
+
 class _guard:
     """Context manager translating anything GitHub raises into a safe exception.
 
@@ -316,10 +637,16 @@ class _guard:
     ``with _guard(...): return ...`` look like a function that can fall off its
     end. Saying it never suppresses is both the truth and what keeps the callers
     typeable.
+
+    ``**fields`` are additional structured log fields the caller already knows
+    (``path``, ``ref``) — recorded alongside the classification so a log line
+    answers "what was being read, from where, and what happened" without a
+    reader having to parse the free-text message.
     """
 
-    def __init__(self, operation: str) -> None:
+    def __init__(self, operation: str, **fields: object) -> None:
         self._operation = operation
+        self._fields = fields
 
     def __enter__(self) -> None:
         return None
@@ -340,8 +667,25 @@ class _guard:
             # no opportunity to put its own string in front of a user.
             message = f"{type(value).__name__} while {self._operation}"
 
-        logger.error("github: %s", message, extra={"operation": self._operation})
+        exc_type, status = _classify(value)
+        classification = _CLASSIFICATION_NAME[exc_type]
+        log_extra: dict[str, object] = {
+            "operation": self._operation,
+            "classification": classification,
+            "status": status,
+            **self._fields,
+        }
+
+        # A classified 404 is data, not an infrastructure failure — it is the
+        # routine outcome of speculatively resolving a repository interface's
+        # path (queryguard.cli's _java_source_resolver) or probing a Liquibase
+        # discovery candidate (queryguard.db.discovery). Logging it at ERROR
+        # made an expected miss read exactly like a real GitHub outage, which
+        # is the log-noise problem a real galaxy-payment run surfaced. Every
+        # other classification is still worth an operator's attention.
+        log = logger.info if exc_type is FileNotFoundAtRef else logger.error
+        log("github: %s", message, extra=log_extra)
         # `from None`: chaining would hang the original exception off ours, and a
         # traceback printer renders that chain. Suppressing it is the difference
         # between a message we vouch for and a message we merely prefixed.
-        raise GitHubUnavailable(message) from None
+        raise exc_type(message) from None

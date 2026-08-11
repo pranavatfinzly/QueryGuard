@@ -26,10 +26,11 @@ import math
 import re
 from collections.abc import Iterable, Sequence
 
-from queryguard.integrations.github import COMMENT_MARKER
+from queryguard.integrations.github import COMMENT_MARKER, REVIEW_MARKER
 from queryguard.models.finding import Evidence, Finding, Severity, Suggestion
 from queryguard.models.query import ExtractedQuery, QueryKind
 from queryguard.models.report import Report
+from queryguard.policy import EnforcementStatus, ReviewResult
 
 __all__ = ["DEFAULT_MAX_FINDINGS", "cap_findings", "rank_findings", "render_markdown"]
 
@@ -129,24 +130,56 @@ def cap_findings(
     return findings[:max_findings], len(findings) - max_findings
 
 
-def render_markdown(report: Report) -> str:
-    """Render a report as the Markdown body of the PR comment.
+def render_markdown(report: Report, *, enforcement: ReviewResult | None = None) -> str:
+    """Render a report as the Markdown body of the PR comment or Review.
 
-    The body carries :data:`queryguard.integrations.github.COMMENT_MARKER` as its
-    first line so re-runs edit the existing comment instead of adding another.
+    The body carries a hidden marker as its first line so a re-run finds and
+    edits the existing one instead of adding another —
+    :data:`queryguard.integrations.github.COMMENT_MARKER` for the plain
+    issue-comment path, :data:`queryguard.integrations.github.REVIEW_MARKER`
+    for the Review path. The two must never collide: a review search that
+    happened to match on the comment marker (or vice versa) would let
+    :func:`queryguard.integrations.github.upsert_review` "find" a plain
+    comment and try to call review-only methods on it.
 
-    Pure: the same report always renders byte-identical Markdown.
+    ``enforcement`` is ``None`` for the plain issue-comment path
+    (:func:`queryguard.integrations.github.upsert_report_comment`), which keeps
+    rendering byte-identical to every existing snapshot — this function's
+    long-standing contract. When supplied (the Pull Request Review path,
+    :func:`queryguard.integrations.github.upsert_review`), the body leads with
+    the deterministic PASS/BLOCKED/DEGRADED/FAILED status and separates
+    blocking findings from everything else, matching the task's required
+    review body shape.
+
+    Pure: the same report and enforcement result always render byte-identical
+    Markdown.
     """
     queries = _queries_by_id(report.queries)
     unanalyzable = [query for query in report.queries if query.parse_error is not None]
 
-    blocks: list[str] = [COMMENT_MARKER, "## QueryGuard", _summary(report, unanalyzable)]
+    marker = REVIEW_MARKER if enforcement is not None else COMMENT_MARKER
+    blocks: list[str] = [marker, "## QueryGuard"]
+    if enforcement is not None:
+        blocks.append(_status_line(enforcement))
+    blocks.append(_summary(report, unanalyzable))
     blocks.extend(_analysis_basis_note(report, unanalyzable))
     blocks.extend(_degraded_section(report.degraded_stages))
     blocks.extend(_unanalyzable_section(unanalyzable))
-    blocks.extend(_findings_sections(report.findings, queries))
+    blocks.extend(_findings_sections(report.findings, queries, enforcement))
 
     return "\n\n".join(blocks) + "\n"
+
+
+def _status_line(result: ReviewResult) -> str:
+    """State the merge decision before any informational report detail.
+
+    A reviewer opening the review must not have to read findings to learn the
+    outcome — the task's own example review body leads with ``Status:``.
+    """
+    line = f"Status: {result.status.value}"
+    if result.status is EnforcementStatus.BLOCKED:
+        line += f"\n\nBlocking findings: {len(result.blocking_findings)}"
+    return line
 
 
 def _summary(report: Report, unanalyzable: Sequence[ExtractedQuery]) -> str:
@@ -272,9 +305,41 @@ def _unanalyzable_section(unanalyzable: Sequence[ExtractedQuery]) -> list[str]:
 
 
 def _findings_sections(
-    findings: Sequence[Finding], queries: dict[str, ExtractedQuery]
+    findings: Sequence[Finding],
+    queries: dict[str, ExtractedQuery],
+    enforcement: ReviewResult | None,
 ) -> list[str]:
-    """One section per severity present, worst first."""
+    """One section per severity present, worst first.
+
+    Without ``enforcement`` (the issue-comment path), unchanged from every
+    existing snapshot: one flat run of severity sections. With it (the Review
+    path), findings split into a "Blocking findings" group and a
+    "Non-blocking findings" group first, each internally still ordered worst
+    severity first — a reviewer must be able to tell at a glance which
+    findings are the reason for ``REQUEST_CHANGES`` and which are along for
+    the ride.
+    """
+    if enforcement is None:
+        return _severity_sections(findings, queries, heading_level="###")
+
+    blocks: list[str] = []
+    if enforcement.blocking_findings:
+        blocks.append("### 🚫 Blocking findings")
+        blocks.extend(
+            _severity_sections(enforcement.blocking_findings, queries, heading_level="####")
+        )
+    if enforcement.warning_findings:
+        blocks.append("### Non-blocking findings")
+        blocks.extend(
+            _severity_sections(enforcement.warning_findings, queries, heading_level="####")
+        )
+    return blocks
+
+
+def _severity_sections(
+    findings: Sequence[Finding], queries: dict[str, ExtractedQuery], *, heading_level: str
+) -> list[str]:
+    """Render the severity groups within one findings section."""
     blocks: list[str] = []
 
     for severity, badge, label in _SEVERITY_DISPLAY:
@@ -284,7 +349,7 @@ def _findings_sections(
         if not at_severity:
             continue
 
-        blocks.append(f"### {badge} {label}")
+        blocks.append(f"{heading_level} {badge} {label}")
         for finding in at_severity:
             blocks.extend(_finding_blocks(finding, queries))
 

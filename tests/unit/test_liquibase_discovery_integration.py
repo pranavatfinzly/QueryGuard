@@ -109,7 +109,7 @@ def test_automatic_discovery_is_used_when_no_env_var_is_configured() -> None:
     fake = RecordedGitHub(recorded=recorded)
 
     with override_settings(github_token="t"):
-        report = cli.review(recorded.repo, recorded.number, client=fake.client, dry_run=True)
+        report = cli.review(recorded.repo, recorded.number, client=fake.client, dry_run=True).report
 
     # No index was declared for customer_id, so a real schema was loaded and
     # correctly flagged the filter — UNKNOWN_SCHEMA would have stayed silent.
@@ -159,7 +159,7 @@ def test_pr_touching_only_a_service_file_still_gets_the_discovered_schema() -> N
     fake = RecordedGitHub(recorded=recorded)
 
     with override_settings(github_token="t"):
-        report = cli.review(recorded.repo, recorded.number, client=fake.client, dry_run=True)
+        report = cli.review(recorded.repo, recorded.number, client=fake.client, dry_run=True).report
 
     assert report.queries
     assert _has_unindexed_filter(report)
@@ -177,7 +177,7 @@ def test_pr_touching_only_a_repository_query_still_gets_the_discovered_schema() 
     fake = RecordedGitHub(recorded=recorded)
 
     with override_settings(github_token="t"):
-        report = cli.review(recorded.repo, recorded.number, client=fake.client, dry_run=True)
+        report = cli.review(recorded.repo, recorded.number, client=fake.client, dry_run=True).report
 
     # customer_id IS indexed in the discovered schema, so no finding — proving
     # a real schema (not UNKNOWN_SCHEMA) was consulted, since a stub would also
@@ -201,7 +201,7 @@ def test_pr_modifying_the_changelog_rebuilds_the_schema_at_pr_head() -> None:
     fake = RecordedGitHub(recorded=recorded)
 
     with override_settings(github_token="t"):
-        report = cli.review(recorded.repo, recorded.number, client=fake.client, dry_run=True)
+        report = cli.review(recorded.repo, recorded.number, client=fake.client, dry_run=True).report
 
     assert not _has_unindexed_filter(report)
 
@@ -227,7 +227,7 @@ def test_pr_adding_a_new_changelog_file_is_reflected_in_the_rebuilt_schema() -> 
     fake = RecordedGitHub(recorded=recorded)
 
     with override_settings(github_token="t"):
-        report = cli.review(recorded.repo, recorded.number, client=fake.client, dry_run=True)
+        report = cli.review(recorded.repo, recorded.number, client=fake.client, dry_run=True).report
 
     assert not _has_unindexed_filter(report)
 
@@ -249,7 +249,7 @@ def test_pr_modifying_the_aggregator_include_is_reconstructed_correctly() -> Non
     fake = RecordedGitHub(recorded=recorded)
 
     with override_settings(github_token="t"):
-        report = cli.review(recorded.repo, recorded.number, client=fake.client, dry_run=True)
+        report = cli.review(recorded.repo, recorded.number, client=fake.client, dry_run=True).report
 
     assert not _has_unindexed_filter(report)
 
@@ -278,7 +278,7 @@ def test_nested_includes_resolve_the_complete_schema() -> None:
     fake = RecordedGitHub(recorded=recorded)
 
     with override_settings(github_token="t"):
-        report = cli.review(recorded.repo, recorded.number, client=fake.client, dry_run=True)
+        report = cli.review(recorded.repo, recorded.number, client=fake.client, dry_run=True).report
 
     assert not _has_unindexed_filter(report)
 
@@ -305,7 +305,7 @@ def test_conflicting_application_configurations_fail_discovery_safely(
     fake = RecordedGitHub(recorded=recorded)
 
     with override_settings(github_token="t"), caplog.at_level(logging.WARNING):
-        report = cli.review(recorded.repo, recorded.number, client=fake.client, dry_run=True)
+        report = cli.review(recorded.repo, recorded.number, client=fake.client, dry_run=True).report
 
     # Neither candidate schema is trusted — UNKNOWN_SCHEMA, so the rule stays
     # silent rather than guessing between an indexed and an unindexed answer.
@@ -333,7 +333,7 @@ def test_a_discovered_changelog_that_cannot_be_loaded_falls_back_gracefully(
     fake = RecordedGitHub(recorded=recorded)
 
     with override_settings(github_token="t"), caplog.at_level(logging.ERROR):
-        report = cli.review(recorded.repo, recorded.number, client=fake.client, dry_run=True)
+        report = cli.review(recorded.repo, recorded.number, client=fake.client, dry_run=True).report
 
     assert report.queries
     assert not _has_unindexed_filter(report)
@@ -360,7 +360,7 @@ def test_a_github_failure_reading_application_properties_falls_back_gracefully()
     fake = RecordedGitHub(recorded=recorded)
 
     with override_settings(github_token="t"):
-        report = cli.review(recorded.repo, recorded.number, client=fake.client, dry_run=True)
+        report = cli.review(recorded.repo, recorded.number, client=fake.client, dry_run=True).report
 
     assert not _has_unindexed_filter(report)
 
@@ -372,7 +372,7 @@ def test_every_candidate_failing_falls_back_to_unknown_schema_not_a_crash() -> N
     fake = RecordedGitHub(recorded=recorded)
 
     with override_settings(github_token="t"):
-        report = cli.review(recorded.repo, recorded.number, client=fake.client, dry_run=True)
+        report = cli.review(recorded.repo, recorded.number, client=fake.client, dry_run=True).report
 
     # No exception, and (with no schema at all) unindexed-filter has nothing
     # to say — the same silence QueryGuard has always had unconfigured.
@@ -403,7 +403,9 @@ def test_no_local_disk_is_touched_during_discovery(tmp_path: Path) -> None:
     os.chdir(str(tmp_path))
     try:
         with override_settings(github_token="t"):
-            report = cli.review(recorded.repo, recorded.number, client=fake.client, dry_run=True)
+            report = cli.review(
+                recorded.repo, recorded.number, client=fake.client, dry_run=True
+            ).report
     finally:
         os.chdir(original_cwd)
 
@@ -468,7 +470,7 @@ def test_end_to_end_acceptance_discovery_through_final_report() -> None:
     # No LIQUIBASE_CHANGELOG_PATH, no GROQ_API_KEY: standard `queryguard review`
     # with nothing configured beyond the token, exactly the acceptance target.
     with override_settings(github_token="t"):
-        report = cli.review(recorded.repo, recorded.number, client=fake.client, dry_run=True)
+        report = cli.review(recorded.repo, recorded.number, client=fake.client, dry_run=True).report
 
     # No Liquibase file appears anywhere in the pull request's diff.
     assert not any(query.provenance.file.endswith(".xml") for query in report.queries)
@@ -493,3 +495,68 @@ def test_end_to_end_acceptance_discovery_through_final_report() -> None:
     markdown = render_markdown(report)
     assert "orders" in markdown
     assert "status" in markdown
+
+
+# --- Repository-wide candidate fallback (Phase 2.3/2.4) -----------------------------
+
+
+def test_no_configuration_anywhere_recovers_via_repository_wide_candidate_search() -> None:
+    # No application.properties/.yml exists in the head tree at all —
+    # conventional-location discovery finds nothing (NOT_FOUND) — yet a
+    # changelog exists and is unambiguously identifiable from repository
+    # evidence alone (referenced by another changelog's <include>), with no
+    # db.liquibase.change-log declared anywhere.
+    root = "app/master.xml"  # no naming hint: LOW on its own
+    child = "db/changelog/orders.xml"  # referenced by root: MEDIUM regardless
+    head_text = {
+        root: _include(child),
+        child: _xml(_unindexed_orders_table()),
+        "OrderRepository.sql": _CUSTOMER_ID_QUERY_TEXT,
+    }
+    entries = [_query_entry("OrderRepository.sql")]
+    recorded = _pull(entries=entries, head_text=head_text)
+    fake = RecordedGitHub(recorded=recorded)
+
+    with override_settings(github_token="t"):
+        report = cli.review(recorded.repo, recorded.number, client=fake.client, dry_run=True).report
+
+    # The real schema was found and consulted (unindexed_filter fires),
+    # even though nothing anywhere declared db.liquibase.change-log.
+    assert _has_unindexed_filter(report)
+
+
+def test_two_equally_plausible_candidates_degrade_to_unknown_schema_not_a_guess() -> None:
+    # Two independent, equally-referenced-nowhere, equally-conventionally-named
+    # changelogs: the fallback must refuse to guess, exactly as conflicting
+    # application.properties files already do.
+    head_text = {
+        "service-a/db/changelog/master.xml": _xml(_unindexed_orders_table()),
+        "service-b/db/changelog/master.xml": _xml(_unindexed_orders_table()),
+        "OrderRepository.sql": _CUSTOMER_ID_QUERY_TEXT,
+    }
+    entries = [_query_entry("OrderRepository.sql")]
+    recorded = _pull(entries=entries, head_text=head_text)
+    fake = RecordedGitHub(recorded=recorded)
+
+    with override_settings(github_token="t"):
+        report = cli.review(recorded.repo, recorded.number, client=fake.client, dry_run=True).report
+
+    # UNKNOWN_SCHEMA: the ambiguous fallback must not silently pick one.
+    assert not _has_unindexed_filter(report)
+
+
+def test_no_changelog_anywhere_is_the_same_silent_unknown_schema_as_before() -> None:
+    # No application.properties, no candidate XML at all: the repository-wide
+    # fallback must degrade exactly as an unconfigured, undiscoverable
+    # repository always has — no crash, no findings from a schema that does
+    # not exist.
+    head_text = {"OrderRepository.sql": _CUSTOMER_ID_QUERY_TEXT}
+    entries = [_query_entry("OrderRepository.sql")]
+    recorded = _pull(entries=entries, head_text=head_text)
+    fake = RecordedGitHub(recorded=recorded)
+
+    with override_settings(github_token="t"):
+        report = cli.review(recorded.repo, recorded.number, client=fake.client, dry_run=True).report
+
+    assert not _has_unindexed_filter(report)
+    assert report.queries

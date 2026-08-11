@@ -12,9 +12,12 @@ problems before they merge. On every pull request it analyzes:
 - JPA native queries (`@Query(nativeQuery = true)`, `createNativeQuery`)
 - Spring Data derived query methods (`findByCustomerIdAndStatusOrderByCreatedAtDesc`)
 
-It posts a single idempotent, tagged Markdown comment on the PR explaining what it
-found, why it is slow, and a suggested fix — backed by a real `EXPLAIN ANALYZE` plan,
-measured index impact via HypoPG, and cross-query N+1 detection powered by Claude.
+It posts a single idempotent, tagged GitHub Pull Request Review on the PR explaining
+what it found, why it is slow, and a suggested fix — backed by a real `EXPLAIN
+ANALYZE` plan, measured index impact via HypoPG, and cross-query N+1 detection
+powered by Claude/Groq. A blocking finding (CRITICAL/HIGH severity by default,
+configurable) makes the review `REQUEST_CHANGES`; everything else is `COMMENT`.
+QueryGuard never submits `APPROVE`.
 
 ## Non-negotiable constraints
 
@@ -26,11 +29,17 @@ These are the invariants of the product. Do not weaken them for convenience.
 2. **Every query execution is wrapped in `BEGIN` … `ROLLBACK`.** No statement may
    commit against the reference DB. This applies to `EXPLAIN ANALYZE`, HypoPG index
    creation, and any ad-hoc probing.
-3. **Analysis is read-only with respect to the PR.** QueryGuard comments; it never
-   pushes commits, edits files, or approves/blocks merges on its own.
-4. **One comment per PR, updated in place.** Comments carry a hidden marker
-   (e.g. `<!-- queryguard:report -->`) so re-runs edit the existing comment instead of
-   spamming the thread.
+3. **QueryGuard's only write action against a PR is its own review.** It creates,
+   edits, or dismisses *its own* GitHub Pull Request Review (marker-identified) —
+   `REQUEST_CHANGES` when a blocking finding exists, `COMMENT` otherwise, never
+   `APPROVE`. Blocking is a judgement GitHub's own review mechanism enforces on
+   QueryGuard's behalf (e.g. via branch protection requiring review), not something
+   QueryGuard does directly — it never merges, never pushes a commit, never edits a
+   file, never creates or closes a pull request, and never touches another actor's
+   comment or review.
+4. **One review per PR, updated in place.** The review body carries a hidden marker
+   (`<!-- queryguard:review -->`) so re-runs edit or supersede QueryGuard's existing
+   review instead of spamming the thread with a new one every run.
 5. **Fail soft.** A crashed stage degrades the report (a "could not analyze" note); it
    must not fail the PR check or block the pipeline unless explicitly configured to.
 

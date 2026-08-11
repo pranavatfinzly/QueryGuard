@@ -28,8 +28,17 @@ from typing import Any
 from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
 
+from queryguard.policy import (
+    DEFAULT_BLOCKING_SEVERITIES,
+    EnforcementPolicy,
+    InvalidEnforcementPolicy,
+    parse_rule_ids,
+    parse_severities,
+)
+
 __all__ = [
     "DEFAULT_GROQ_MODEL",
+    "InvalidEnforcementPolicy",
     "MissingConfiguration",
     "Settings",
     "get_settings",
@@ -43,7 +52,21 @@ __all__ = [
 #: defined it (see :meth:`Settings._default_groq_model_when_blank`). The single
 #: place this string is written; every other reference goes through
 #: :attr:`Settings.groq_model`.
-DEFAULT_GROQ_MODEL = "llama-3.3-70b-versatile"
+#:
+#: Not ``llama-3.3-70b-versatile`` (this project's previous default) for two
+#: independent reasons, either of which alone explains the "API returned 400"
+#: a real galaxy-payment run hit:
+#:
+#: 1. Groq announced deprecating it on 2026-06-17, shutting down 2026-08-16 —
+#:    Groq's own migration guidance points at this model or
+#:    ``qwen/qwen3.6-27b``.
+#: 2. ``integrations/groq.py`` sends its structured-output request with
+#:    ``"strict": True``, which per Groq's own documentation is only
+#:    supported on ``openai/gpt-oss-20b`` and ``openai/gpt-oss-120b`` —
+#:    ``llama-3.3-70b-versatile`` never supported it, independent of the
+#:    deprecation timeline. A ``GROQ_MODEL`` override must support strict
+#:    structured outputs or every N+1 explanation call will 400.
+DEFAULT_GROQ_MODEL = "openai/gpt-oss-120b"
 
 #: Env var that marks a run as not needing real configuration. Set to ``test`` to
 #: import QueryGuard without a token — for a test run, a lint pass, or ``--help``.
@@ -61,6 +84,20 @@ REQUIRED_FIELDS: tuple[tuple[str, str, str], ...] = (
         "read pull requests and post the review comment",
     ),
 )
+
+#: Environment variable name -> the :class:`Settings` field it populates. Named
+#: with a ``QUERYGUARD_`` prefix rather than the field's own upper-cased name
+#: (unlike every other field) because these configure enforcement *policy*,
+#: not a credential or an endpoint — a name distinct enough that an operator
+#: skimming a workflow file's ``env:`` block does not mistake it for a
+#: provider setting.
+ENFORCEMENT_ENVIRONMENT_FIELDS: dict[str, str] = {
+    "QUERYGUARD_BLOCK_SEVERITIES": "block_severities",
+    "QUERYGUARD_IGNORE_SEVERITIES": "ignore_severities",
+    "QUERYGUARD_BLOCK_RULES": "block_rules",
+    "QUERYGUARD_WARN_RULES": "warn_rules",
+    "QUERYGUARD_IGNORE_RULES": "ignore_rules",
+}
 
 #: Set while a hermetic :class:`Settings` is being built. A ContextVar rather than
 #: a module flag so a test isolating its own settings cannot make a concurrent
@@ -94,6 +131,7 @@ class Settings(BaseSettings):
         extra="ignore",
         frozen=True,
         case_sensitive=False,
+        populate_by_name=True,
     )
 
     github_token: SecretStr | None = None
@@ -111,6 +149,34 @@ class Settings(BaseSettings):
         "working directory a run analyzes. Unset means no schema is available and "
         "every schema-dependent static rule stays silent, exactly as before this "
         "setting existed.",
+    )
+    block_severities: str | None = Field(
+        default=None,
+        validation_alias="QUERYGUARD_BLOCK_SEVERITIES",
+        description="Comma-separated severities that make the review REQUEST_CHANGES. "
+        "Unset or blank defaults to CRITICAL,HIGH.",
+    )
+    ignore_severities: str | None = Field(
+        default=None,
+        validation_alias="QUERYGUARD_IGNORE_SEVERITIES",
+        description="Optional comma-separated severities that never block, even if listed "
+        "in QUERYGUARD_BLOCK_SEVERITIES.",
+    )
+    block_rules: str | None = Field(
+        default=None,
+        validation_alias="QUERYGUARD_BLOCK_RULES",
+        description="Optional comma-separated rule IDs that block regardless of severity.",
+    )
+    warn_rules: str | None = Field(
+        default=None,
+        validation_alias="QUERYGUARD_WARN_RULES",
+        description="Optional comma-separated rule IDs that are always non-blocking, "
+        "regardless of severity or QUERYGUARD_BLOCK_RULES.",
+    )
+    ignore_rules: str | None = Field(
+        default=None,
+        validation_alias="QUERYGUARD_IGNORE_RULES",
+        description="Optional comma-separated rule IDs that never block.",
     )
 
     @field_validator("groq_model", mode="before")
@@ -170,7 +236,15 @@ class Settings(BaseSettings):
         ``{"GITHUB_TOKEN": "..."}`` — without exporting anything real.
         """
         lowered = {key.lower(): value for key, value in environ.items()}
-        return cls.isolated(**{name: lowered[name] for name in cls.model_fields if name in lowered})
+        values = {name: lowered[name] for name in cls.model_fields if name in lowered}
+        values.update(
+            {
+                field_name: lowered[env_name.lower()]
+                for env_name, field_name in ENFORCEMENT_ENVIRONMENT_FIELDS.items()
+                if env_name.lower() in lowered
+            }
+        )
+        return cls.isolated(**values)
 
     def require_github_token(self) -> str:
         """The GitHub token, or a clear failure naming what to set."""
@@ -194,6 +268,40 @@ class Settings(BaseSettings):
         a provider and needs the raw value to construct one.
         """
         return self._require("groq_api_key")
+
+    def enforcement_policy(self) -> EnforcementPolicy:
+        """Build and validate the one policy used to gate a pull request review.
+
+        Values stay raw strings on :class:`Settings` and are parsed here, not
+        at field-validation time — normal shell and GitHub Actions syntax
+        (``CRITICAL,HIGH``) works with no JSON quoting, and an invalid setting
+        fails when a policy is actually requested rather than at every
+        ``Settings`` construction (including in tests that never touch
+        enforcement). Parsing is centralized in :mod:`queryguard.policy`.
+        """
+        blocking = DEFAULT_BLOCKING_SEVERITIES
+        if self.block_severities is not None and self.block_severities.strip():
+            blocking = parse_severities(
+                self.block_severities, setting_name="QUERYGUARD_BLOCK_SEVERITIES"
+            )
+        ignored = (
+            frozenset()
+            if self.ignore_severities is None
+            else parse_severities(
+                self.ignore_severities, setting_name="QUERYGUARD_IGNORE_SEVERITIES"
+            )
+        )
+        return EnforcementPolicy(
+            blocking_severities=blocking,
+            ignored_severities=ignored,
+            blocking_rule_ids=parse_rule_ids(
+                self.block_rules, setting_name="QUERYGUARD_BLOCK_RULES"
+            ),
+            warning_rule_ids=parse_rule_ids(self.warn_rules, setting_name="QUERYGUARD_WARN_RULES"),
+            ignored_rule_ids=parse_rule_ids(
+                self.ignore_rules, setting_name="QUERYGUARD_IGNORE_RULES"
+            ),
+        )
 
     def _require(self, field: str) -> str:
         secret: SecretStr | None = getattr(self, field)

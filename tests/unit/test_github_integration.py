@@ -297,6 +297,118 @@ def test_the_original_exception_is_not_chained_onto_ours(
     assert raised.value.__suppress_context__
 
 
+@pytest.mark.parametrize(
+    ("status", "exc_type"),
+    [
+        (404, github.FileNotFoundAtRef),
+        (401, github.PermissionDenied),
+        (403, github.PermissionDenied),
+        (422, github.InvalidRef),
+        (500, github.TransientGitHubError),
+        (503, github.TransientGitHubError),
+        (400, GitHubUnavailable),  # unclassified stays the base type
+    ],
+)
+def test_a_github_status_is_classified_into_the_right_subclass(
+    status: int,
+    exc_type: type[GitHubUnavailable],
+    recorded_github: RecordedGitHub,
+    recorded_pr: RecordedPullRequest,
+) -> None:
+    recorded_github.raise_on_pull = GithubException(status, {"message": "boom"}, None)
+
+    with pytest.raises(exc_type):
+        github.fetch_pull_request(
+            recorded_pr.repo, recorded_pr.number, client=recorded_github.client
+        )
+
+
+def test_a_not_found_classification_logs_at_info_not_error(
+    recorded_github: RecordedGitHub,
+    recorded_pr: RecordedPullRequest,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # The real defect the task surfaced: an expected miss (a speculatively
+    # guessed path that does not exist) read exactly like a real outage in the
+    # logs. A 404 must not be logged at ERROR.
+    recorded_github.raise_on_pull = GithubException(404, {"message": "Not Found"}, None)
+
+    with caplog.at_level(logging.DEBUG), pytest.raises(github.FileNotFoundAtRef):
+        github.fetch_pull_request(
+            recorded_pr.repo, recorded_pr.number, client=recorded_github.client
+        )
+
+    records = [r for r in caplog.records if r.name == github.logger.name]
+    assert len(records) == 1
+    assert records[0].levelno == logging.INFO
+    assert records[0].classification == "not_found"
+    assert records[0].status == 404
+
+
+def test_a_permission_denied_classification_still_logs_at_error(
+    recorded_github: RecordedGitHub,
+    recorded_pr: RecordedPullRequest,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    recorded_github.raise_on_pull = GithubException(403, {"message": "Forbidden"}, None)
+
+    with caplog.at_level(logging.DEBUG), pytest.raises(github.PermissionDenied):
+        github.fetch_pull_request(
+            recorded_pr.repo, recorded_pr.number, client=recorded_github.client
+        )
+
+    records = [r for r in caplog.records if r.name == github.logger.name]
+    assert len(records) == 1
+    assert records[0].levelno == logging.ERROR
+    assert records[0].classification == "permission_denied"
+
+
+def test_rate_limit_is_classified_as_transient_not_permission_denied(
+    recorded_github: RecordedGitHub, recorded_pr: RecordedPullRequest
+) -> None:
+    # A 403 from rate limiting is a materially different fact than a bad token:
+    # the request might simply succeed on retry once the window resets.
+    recorded_github.raise_on_pull = RateLimitExceededException(
+        403, {"message": "API rate limit exceeded"}, None
+    )
+
+    with pytest.raises(github.TransientGitHubError):
+        github.fetch_pull_request(
+            recorded_pr.repo, recorded_pr.number, client=recorded_github.client
+        )
+
+
+def test_a_connection_failure_is_classified_as_transient(
+    recorded_github: RecordedGitHub, recorded_pr: RecordedPullRequest
+) -> None:
+    recorded_github.raise_on_pull = ConnectionError("connection reset by peer")
+
+    with pytest.raises(github.TransientGitHubError):
+        github.fetch_pull_request(
+            recorded_pr.repo, recorded_pr.number, client=recorded_github.client
+        )
+
+
+def test_read_file_at_ref_logs_the_path_and_ref_on_failure(
+    recorded_github: RecordedGitHub,
+    recorded_pr: RecordedPullRequest,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    context = github.fetch_pull_request(
+        recorded_pr.repo, recorded_pr.number, client=recorded_github.client
+    )
+    recorded_github.raise_on_contents = GithubException(404, {"message": "Not Found"}, None)
+
+    with caplog.at_level(logging.DEBUG), pytest.raises(github.FileNotFoundAtRef):
+        github.read_file_at_ref(
+            context, "missing.java", ref=recorded_pr.head_sha, client=recorded_github.client
+        )
+
+    record = next(r for r in caplog.records if r.name == github.logger.name)
+    assert record.path == "missing.java"
+    assert record.ref == recorded_pr.head_sha
+
+
 def test_a_rate_limit_is_reported_as_the_status_it_is(
     recorded_github: RecordedGitHub, recorded_pr: RecordedPullRequest
 ) -> None:
@@ -545,11 +657,14 @@ def test_github_api_failure_during_comment_upsert_raises_unavailable(
         github.upsert_report_comment(context, report, client=recorded_github.client)
 
 
-def test_queryguard_never_pushes_edits_files_or_approves() -> None:
+def test_queryguard_never_pushes_edits_files_or_merges() -> None:
     # Verify that github.py only retrieves pull requests, reads files, lists files,
-    # and manages issue comments. It must not touch ref updates, git commits,
-    # reviews, or merges.
-    # We inspect the AST of queryguard/integrations/github.py for prohibited PyGithub calls.
+    # manages issue comments, and manages its own Pull Request Review. It must not
+    # touch ref updates, git commits, other pull requests, or merges. create_review
+    # is deliberately permitted (invariant 3, CLAUDE.md) — QueryGuard's own review is
+    # its one write action against a PR — but never with event="APPROVE" (checked
+    # separately below), and PullRequestReview.edit/.dismiss operate only on the
+    # review QueryGuard itself created and identified by REVIEW_MARKER.
     source = (PACKAGE / "integrations" / "github.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
 
@@ -559,7 +674,6 @@ def test_queryguard_never_pushes_edits_files_or_approves() -> None:
         "merge",
         "create_commit",
         "update_file",
-        "create_review",
         "create_git_ref",
         "delete_ref",
         "create_pull",
@@ -570,3 +684,21 @@ def test_queryguard_never_pushes_edits_files_or_approves() -> None:
 
     intersection = attributes.intersection(prohibited)
     assert not intersection, f"QueryGuard calls prohibited PyGithub write APIs: {intersection}"
+
+
+def test_queryguard_never_approves_a_pull_request() -> None:
+    # The one event value invariant 3 forbids outright, independent of the
+    # attribute-call check above: no code path may pass the exact string
+    # "APPROVE" as a value (an event=... argument, a dict entry). Checked as
+    # an exact string-constant match via the AST, not a substring search of
+    # the raw source, so this cannot be defeated by mentioning APPROVE in a
+    # docstring or comment explaining that it is forbidden.
+    source = (PACKAGE / "integrations" / "github.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+
+    literal_approves = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant) and node.value == "APPROVE"
+    ]
+    assert not literal_approves

@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 
 from queryguard.models.report import Report, RunContext
 from queryguard.pipeline.diff import INGEST_STAGE
+from queryguard.policy import EnforcementPolicy, EnforcementStatus, ReviewResult
 
 if TYPE_CHECKING:
     from github import Github
@@ -25,6 +26,32 @@ if TYPE_CHECKING:
     from queryguard.pipeline.static_rules.schema import SchemaProvider
 
 logger = logging.getLogger(__name__)
+
+#: Exit code contract (Phase 9). ``PASS`` and ``DEGRADED`` both use 0 — CLAUDE.md
+#: invariant 5: a stage that failed soft must not fail the PR check by default,
+#: it must only be visible in the review body and this process's stderr summary.
+EXIT_PASS = 0
+#: A GitHub Action step exiting non-zero fails the check. ``BLOCKED`` and
+#: ``FAILED`` are deliberately different exit codes rather than both mapping to
+#: a single "review is red" status, so a consumer's own automation (or a human
+#: skimming `queryguard review; echo $?`) can tell "there is a real blocking
+#: finding" from "QueryGuard itself could not reliably analyze this pull
+#: request" without parsing stderr.
+EXIT_FAILED = 1
+EXIT_BLOCKED = 2
+#: A configuration QueryGuard cannot safely interpret (a malformed
+#: `QUERYGUARD_BLOCK_SEVERITIES`, a missing required credential) is neither a
+#: review outcome nor a GitHub/network failure — distinct from both so a
+#: consumer does not mistake "you configured this wrong" for "the pull request
+#: has a problem" or "GitHub was unreachable".
+EXIT_CONFIG_ERROR = 3
+
+_EXIT_CODE_FOR_STATUS: dict[EnforcementStatus, int] = {
+    EnforcementStatus.PASS: EXIT_PASS,
+    EnforcementStatus.DEGRADED: EXIT_PASS,
+    EnforcementStatus.BLOCKED: EXIT_BLOCKED,
+    EnforcementStatus.FAILED: EXIT_FAILED,
+}
 
 _REPOSITORY = re.compile(r"^[^/\s]+/[^/\s]+$")
 
@@ -187,16 +214,33 @@ def _load_discovered_schema(context: RunContext, client: Github) -> SchemaProvid
     both correctly see the schema as it will actually be once the pull request
     merges.
 
-    Every non-``DISCOVERED`` outcome — nothing found, more than one
-    configuration file disagreeing, a discovered path that turns out not to
-    resolve to a real changelog — degrades to
-    :data:`~queryguard.pipeline.static_rules.schema.UNKNOWN_SCHEMA`, logged but
-    never raised: an unconfigured, undiscoverable repository must analyze
-    exactly as it did before this feature existed, not turn into a failed run.
+    If conventional-location discovery finds nothing usable — no configuration
+    declared the key, the declared path is blank, or the path it names does
+    not actually resolve to a real changelog — this does not give up
+    immediately (Phase 2.3): it falls back to a repository-wide candidate
+    search (:mod:`queryguard.db.candidate_discovery`) before degrading to
+    :data:`~queryguard.pipeline.static_rules.schema.UNKNOWN_SCHEMA`. The one
+    outcome that does *not* trigger the fallback is
+    :attr:`~queryguard.db.discovery.DiscoveryStatus.AMBIGUOUS`: two
+    configuration files genuinely disagreeing is a reason to stop guessing,
+    not a reason to guess harder from the repository tree.
+
+    Every degraded outcome is logged but never raised: an unconfigured,
+    undiscoverable repository must analyze exactly as it did before this
+    feature existed, not turn into a failed run.
     """
-    from queryguard.db.discovery import DiscoveryStatus, discover_liquibase_changelog
+    from queryguard.db.candidate_discovery import resolve_candidate_discovery
+    from queryguard.db.discovery import (
+        DiscoveryResult,
+        DiscoveryStatus,
+        discover_liquibase_changelog,
+    )
     from queryguard.db.liquibase import LiquibaseParseError, build_table_schemas_remote
-    from queryguard.integrations.github import read_file_at_ref
+    from queryguard.integrations.github import (
+        GitHubUnavailable,
+        list_files_at_ref,
+        read_file_at_ref,
+    )
     from queryguard.pipeline.static_rules.schema import UNKNOWN_SCHEMA, StaticSchemaProvider
 
     log_context = {"run_id": context.run_id, "repo": context.repo, "pr_number": context.pr_number}
@@ -210,65 +254,103 @@ def _load_discovered_schema(context: RunContext, client: Github) -> SchemaProvid
     def read(path: str) -> str:
         return read_file_at_ref(context, path, ref=head_sha, client=client)
 
-    result = discover_liquibase_changelog(read)
+    def load(result: DiscoveryResult, *, source: str) -> StaticSchemaProvider | None:
+        """One discovery outcome, loaded if it names a working changelog.
 
-    if result.status is DiscoveryStatus.NOT_FOUND:
-        logger.debug(
-            "no LIQUIBASE_CHANGELOG_PATH configured and no application "
-            "configuration declared db.liquibase.change-log; continuing "
-            "without a schema",
-            extra=log_context,
+        ``None`` — not :data:`UNKNOWN_SCHEMA` — on anything short of success,
+        so the caller can tell "this attempt found nothing usable, the next
+        fallback should run" from "this attempt is the final answer" without
+        re-inspecting ``result.status`` itself.
+        """
+        if result.status is not DiscoveryStatus.DISCOVERED or result.changelog_path is None:
+            return None
+        logger.info(
+            "Liquibase changelog found (%s): %s (%s)",
+            source,
+            result.changelog_path,
+            result.source_file,
+            extra={**log_context, "changelog_path": result.changelog_path, "source": source},
         )
-        return UNKNOWN_SCHEMA
+        try:
+            tables = build_table_schemas_remote(result.changelog_path, read)
+        except LiquibaseParseError:
+            logger.exception(
+                "changelog %s (%s) could not be loaded",
+                result.changelog_path,
+                source,
+                extra=log_context,
+            )
+            return None
+        logger.info(
+            "Liquibase schema loaded (%s): %d table(s)",
+            source,
+            len(tables),
+            extra={**log_context, "number_of_tables": len(tables)},
+        )
+        return StaticSchemaProvider(tables)
 
-    if result.status is DiscoveryStatus.AMBIGUOUS:
+    primary = discover_liquibase_changelog(read)
+    schema = load(primary, source="application configuration")
+    if schema is not None:
+        return schema
+
+    if primary.status is DiscoveryStatus.AMBIGUOUS:
         logger.warning(
             "Liquibase changelog discovery is ambiguous: %s; set "
             "LIQUIBASE_CHANGELOG_PATH explicitly to resolve it",
-            result.reason,
+            primary.reason,
             extra=log_context,
         )
         return UNKNOWN_SCHEMA
 
-    if result.status is DiscoveryStatus.INVALID:
+    if primary.status is DiscoveryStatus.NOT_FOUND:
+        logger.debug(
+            "no LIQUIBASE_CHANGELOG_PATH configured and no application "
+            "configuration declared db.liquibase.change-log",
+            extra=log_context,
+        )
+    elif primary.status is DiscoveryStatus.INVALID:
         logger.warning(
             "Liquibase changelog discovery found an unusable configuration in %s: %s",
-            result.source_file,
-            result.reason,
+            primary.source_file,
+            primary.reason,
             extra=log_context,
         )
-        return UNKNOWN_SCHEMA
-
-    if result.changelog_path is None:
-        # Unreachable in practice — DISCOVERED always carries a path — but a
-        # defensive fallback here costs nothing and keeps this function
-        # correctly typed without asserting an invariant on another module's
-        # behalf.
-        return UNKNOWN_SCHEMA
+    # DISCOVERED-but-unloadable falls through here too: `load` already logged
+    # why, via LiquibaseParseError above.
 
     logger.info(
-        "automatically discovered Liquibase changelog %s (from %s)",
-        result.changelog_path,
-        result.source_file,
-        extra={**log_context, "changelog_path": result.changelog_path},
+        "falling back to a repository-wide Liquibase candidate search",
+        extra=log_context,
     )
-
     try:
-        tables = build_table_schemas_remote(result.changelog_path, read)
-    except LiquibaseParseError:
-        logger.exception(
-            "discovered changelog %s could not be loaded; continuing without a schema",
-            result.changelog_path,
+        paths = list_files_at_ref(context, ref=head_sha, client=client)
+    except GitHubUnavailable:
+        logger.warning(
+            "could not list the repository tree for candidate search; continuing without a schema",
             extra=log_context,
         )
         return UNKNOWN_SCHEMA
 
-    logger.info(
-        "Liquibase schema loaded from discovered changelog: %d table(s)",
-        len(tables),
-        extra={**log_context, "number_of_tables": len(tables)},
-    )
-    return StaticSchemaProvider(tables)
+    fallback = resolve_candidate_discovery(paths, read)
+    schema = load(fallback, source="repository fallback")
+    if schema is not None:
+        return schema
+
+    if fallback.status is DiscoveryStatus.AMBIGUOUS:
+        logger.warning(
+            "Liquibase changelog candidate search is ambiguous: %s; set "
+            "LIQUIBASE_CHANGELOG_PATH explicitly to resolve it",
+            fallback.reason,
+            extra=log_context,
+        )
+    else:
+        logger.debug(
+            "no Liquibase changelog could be found, configured, or discovered; "
+            "continuing without a schema",
+            extra=log_context,
+        )
+    return UNKNOWN_SCHEMA
 
 
 def _java_source_resolver(context: RunContext, client: Github) -> ResolveJavaSource | None:
@@ -327,8 +409,9 @@ def review(
     client: Github | None = None,
     runner: AnalysisRunner | None = None,
     llm_provider: LLMExplanationProvider | None = None,
-) -> Report:
-    """Orchestrate the existing ingest, analysis, rendering, and comment stages.
+    enforcement_policy: EnforcementPolicy | None = None,
+) -> ReviewResult:
+    """Orchestrate ingest, analysis, rendering, and the Pull Request Review.
 
     An injected client is the offline seam used by recorded fixtures. In a normal
     invocation, ``new_client`` obtains and validates GitHub configuration.
@@ -341,35 +424,48 @@ def review(
     the same behavior can do the same with
     :func:`queryguard.integrations.groq.create_default_llm_provider`. Ignored
     when ``runner`` is supplied directly, the same way ``runner`` already
-    supersedes the schema this function would otherwise load.
+    supersedes the schema this function would otherwise load. ``enforcement_policy``
+    defaults the same way, to :class:`~queryguard.policy.EnforcementPolicy`'s own
+    default rather than reading configuration here — ``main`` builds the real one
+    from :meth:`~queryguard.config.Settings.enforcement_policy`.
 
     A :class:`~queryguard.integrations.github.GitHubUnavailable` from ingestion —
     GitHub could not be reached, or refused a request, before a single file was
     read — degrades rather than raises (CLAUDE.md invariant 5): the caller still
-    gets a :class:`Report`, naming the failure, with no queries and no findings
-    rather than either an exception or a comment that could read as "nothing
-    wrong here". Nothing else is caught this broadly. A programming error —
-    ``TypeError``, ``AssertionError``, any bug in extraction or the rule engine —
-    is not GitHub being unavailable, and must still reach the caller: silently
-    degrading those would hide a real QueryGuard failure behind a green check,
-    which is a worse outcome than a loud one.
+    gets a :class:`~queryguard.policy.ReviewResult` whose status is
+    :attr:`~queryguard.policy.EnforcementStatus.FAILED`, naming the failure, with
+    no queries and no findings rather than either an exception or a review that
+    could read as "nothing wrong here". Nothing else is caught this broadly. A
+    programming error — ``TypeError``, ``AssertionError``, any bug in extraction
+    or the rule engine — is not GitHub being unavailable, and must still reach
+    the caller: silently degrading those would hide a real QueryGuard failure
+    behind a green check, which is a worse outcome than a loud one.
+
+    ``post_comment`` posts QueryGuard's Pull Request Review
+    (:func:`~queryguard.integrations.github.upsert_review`) — CLAUDE.md invariant
+    3/4's primary output. The parameter name predates that becoming a real
+    review rather than an issue comment; kept rather than renamed, since a CLI
+    flag is a compatibility surface the same way a public function's name is,
+    and ``--post-comment`` in an existing workflow file must keep working.
     """
-    from queryguard.integrations.github import GitHubUnavailable, new_client, upsert_report_comment
+    from queryguard.integrations.github import GitHubUnavailable, new_client, upsert_review
     from queryguard.pipeline.ingest import ingest_pull_request
     from queryguard.pipeline.runner import AnalysisRunner
     from queryguard.pipeline.static_rules import RuleEngine
 
     resolved_client = client if client is not None else new_client()
+    policy = enforcement_policy if enforcement_policy is not None else EnforcementPolicy()
 
     try:
         ingested = ingest_pull_request(repo, pr_number, client=resolved_client)
     except GitHubUnavailable as error:
-        # The comment's target is `repo`/`pr_number` alone — already known from
+        # The review's target is `repo`/`pr_number` alone — already known from
         # the caller's own arguments, not from anything `ingest_pull_request`
-        # would have resolved. A degraded comment can still be attempted below
+        # would have resolved. A degraded review can still be attempted below
         # even though ingestion itself never got that far.
         context = RunContext(run_id=str(uuid.uuid4()), repo=repo, pr_number=pr_number)
         report = Report(context=context, degraded_stages=[f"{INGEST_STAGE}:{error}"])
+        result = policy.evaluate(report)
     else:
         context = ingested.context
         if runner is not None:
@@ -379,27 +475,33 @@ def review(
             resolved_runner = AnalysisRunner(
                 engine=RuleEngine(schema=schema), llm_provider=llm_provider
             )
-        report = resolved_runner.run(
+        result = resolved_runner.run_review(
             repo=context.repo,
             pr_number=context.pr_number,
             sources=ingested.sources,
             context=context,
             initial_degraded_stages=ingested.degraded_stages,
             resolve_source=_java_source_resolver(context, resolved_client),
+            enforcement_policy=policy,
         )
 
     if post_comment and not dry_run:
         # The integration owns the idempotent create-or-update behavior.
         try:
-            upsert_report_comment(context, report, client=resolved_client)
+            upsert_review(context, result, client=resolved_client)
         except GitHubUnavailable:
-            # Posting is optional: retain the useful static report and make the
+            # Posting is optional: retain the useful report and make the
             # coverage gap visible, matching the runner's fail-soft contract.
-            report = report.model_copy(
-                update={"degraded_stages": [*report.degraded_stages, "post_comment"]}
+            # Re-evaluated (not just tagged onto the existing result) so a
+            # posting failure that pushes the run from PASS to DEGRADED is
+            # reflected in the status this function returns, not just in
+            # degraded_stages.
+            degraded_report = result.report.model_copy(
+                update={"degraded_stages": [*result.report.degraded_stages, "post_review"]}
             )
+            result = policy.evaluate(degraded_report, findings=result.findings)
 
-    return report
+    return result
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -434,20 +536,29 @@ def main(argv: Sequence[str] | None = None) -> int:
 
             llm_provider = create_default_llm_provider()
 
-        report = review(
+        from queryguard.config import get_settings
+
+        # Built inside the try block: an invalid QUERYGUARD_BLOCK_SEVERITIES
+        # (etc.) raises InvalidEnforcementPolicy, which the except block below
+        # maps to EXIT_CONFIG_ERROR rather than a generic failure.
+        enforcement_policy = get_settings().enforcement_policy()
+
+        result = review(
             args.repo,
             args.pr,
             post_comment=args.post_comment,
             dry_run=args.dry_run,
             client=client,
             llm_provider=llm_provider,
+            enforcement_policy=enforcement_policy,
         )
         # Rendering is deliberately here, after every optional operation, so stdout
         # is always exactly the final report body and never a credential or log.
         from queryguard.pipeline.report import render_markdown
 
-        _print_markdown(render_markdown(report))
-        return 0
+        _print_markdown(render_markdown(result.report, enforcement=result))
+        _print_enforcement_summary(result)
+        return _EXIT_CODE_FOR_STATUS[result.status]
     except Exception as error:
         # GitHub's integration already provides safe, actionable messages. For
         # every other boundary (including configuration import), avoid rendering an
@@ -458,7 +569,20 @@ def main(argv: Sequence[str] | None = None) -> int:
             ("queryguard.config", "MissingConfiguration"),
             ("queryguard.fixtures", "FixtureError"),
             ("queryguard.integrations.github", "GitHubUnavailable"),
+            ("queryguard.policy", "InvalidEnforcementPolicy"),
         }
+        # A configuration QueryGuard refuses to guess at (EXIT_CONFIG_ERROR) is
+        # a materially different outcome from every other safe error here
+        # (EXIT_FAILED) — see the exit-code constants' own documentation.
+        config_error_types = {
+            ("queryguard.config", "MissingConfiguration"),
+            ("queryguard.policy", "InvalidEnforcementPolicy"),
+        }
+        exit_code = (
+            EXIT_CONFIG_ERROR
+            if (type(error).__module__, type(error).__name__) in config_error_types
+            else EXIT_FAILED
+        )
         if (type(error).__module__, type(error).__name__) in safe_error_types:
             print(f"QueryGuard failed: {error}", file=sys.stderr)
         elif isinstance(error, ImportError):
@@ -479,7 +603,23 @@ def main(argv: Sequence[str] | None = None) -> int:
                 # message could embed secret-bearing context (e.g. a URL or
                 # header), unlike ImportError above.
                 traceback.print_exception(type(error), error, error.__traceback__, file=sys.stderr)
-        return 1
+        return exit_code
+
+
+def _print_enforcement_summary(result: ReviewResult) -> None:
+    """Print the structured merge decision to stderr, never stdout.
+
+    Stdout stays exactly the review body (:func:`_print_markdown`'s own
+    contract, unaffected by this) — this is the machine/operator-facing
+    summary a CI log shows beside the exit code, not part of what QueryGuard
+    would post to GitHub.
+    """
+    print(f"QueryGuard: {result.status.value}", file=sys.stderr)
+    if not result.blocking_findings:
+        return
+    print(f"Blocking findings: {len(result.blocking_findings)}", file=sys.stderr)
+    for finding in result.blocking_findings:
+        print(f"- {finding.severity.name}: {finding.title}", file=sys.stderr)
 
 
 def _print_markdown(markdown: str) -> None:

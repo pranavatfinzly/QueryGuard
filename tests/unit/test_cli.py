@@ -13,6 +13,7 @@ from queryguard.config import MissingConfiguration, override_settings
 from queryguard.fixtures import load_recorded_fixture
 from queryguard.integrations import github
 from queryguard.models.report import Report, RunContext
+from queryguard.policy import EnforcementPolicy, EnforcementStatus
 from tests.conftest import RecordedGitHub, RecordedPullRequest
 
 RECORDED_FIXTURE = Path("tests/fixtures/diffs")
@@ -49,37 +50,42 @@ def test_review_runs_recorded_fixture_without_network_and_preserves_ingest_conte
 ) -> None:
     fake = recorded_github
     pull = recorded_pr
-    report = cli.review(pull.repo, pull.number, client=fake.client, dry_run=True)
+    result = cli.review(pull.repo, pull.number, client=fake.client, dry_run=True)
 
-    assert report.context.base_sha == pull.base_sha
-    assert report.context.head_sha == pull.head_sha
-    assert report.findings
-    assert fake.comments == []
+    assert result.report.context.base_sha == pull.base_sha
+    assert result.report.context.head_sha == pull.head_sha
+    assert result.report.findings
+    assert fake.reviews == []
 
 
 def test_main_prints_rendered_markdown(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     report = Report(context=RunContext(run_id="r", repo="acme/billing", pr_number=1))
-    monkeypatch.setattr(cli, "review", lambda *args, **kwargs: report)
+    result = EnforcementPolicy().evaluate(report)
+    monkeypatch.setattr(cli, "review", lambda *args, **kwargs: result)
 
     assert cli.main(["review", "--repo", "acme/billing", "--pr", "1"]) == 0
     assert (
-        capsys.readouterr().out
-        == "<!-- queryguard:report -->\n\n## QueryGuard\n\nNo queries were found in this change.\n"
+        capsys.readouterr().out == "<!-- queryguard:review -->\n\n## QueryGuard\n\nStatus: PASS\n\n"
+        "No queries were found in this change.\n"
     )
 
 
-def test_post_comment_creates_then_updates_one_comment(
+def test_post_comment_creates_then_updates_one_review(
     recorded_github: RecordedGitHub, recorded_pr: RecordedPullRequest
 ) -> None:
+    # The recorded fixture PR has blocking findings on every run, so this also
+    # proves idempotency: the second call edits the same CHANGES_REQUESTED
+    # review in place rather than creating a second one.
     fake = recorded_github
     pull = recorded_pr
 
     cli.review(pull.repo, pull.number, client=fake.client, post_comment=True)
     cli.review(pull.repo, pull.number, client=fake.client, post_comment=True)
 
-    assert len(fake.comments) == 1
+    assert len(fake.reviews) == 1
+    assert fake.reviews[0].state == "CHANGES_REQUESTED"
 
 
 def test_dry_run_never_writes_even_when_post_comment_is_requested(
@@ -90,7 +96,7 @@ def test_dry_run_never_writes_even_when_post_comment_is_requested(
 
     cli.review(pull.repo, pull.number, client=fake.client, post_comment=True, dry_run=True)
 
-    assert fake.comments == []
+    assert fake.reviews == []
 
 
 def test_offline_fixture_dry_run_needs_no_token_network_or_writes(
@@ -103,6 +109,8 @@ def test_offline_fixture_dry_run_needs_no_token_network_or_writes(
     monkeypatch.setattr(github, "new_client", unexpected_client)
     recorded, client = load_recorded_fixture(RECORDED_FIXTURE)
 
+    # The fixture PR's static findings include a CRITICAL and three HIGH —
+    # BLOCKED under the default policy, so this run exits 2, not 0.
     assert (
         cli.main(
             [
@@ -116,10 +124,10 @@ def test_offline_fixture_dry_run_needs_no_token_network_or_writes(
                 str(RECORDED_FIXTURE),
             ]
         )
-        == 0
+        == cli.EXIT_BLOCKED
     )
     rendered = capsys.readouterr().out
-    assert rendered.startswith("<!-- queryguard:report -->\n\n## QueryGuard\n")
+    assert rendered.startswith("<!-- queryguard:review -->\n\n## QueryGuard\n\nStatus: BLOCKED\n")
     assert "Reviewed 20 queries and found 15 problems." in rendered
     # The fixture client intentionally has no comment API at all.
     assert not hasattr(
@@ -154,17 +162,19 @@ def test_comment_failure_is_fail_soft_and_the_report_is_still_printed(
 ) -> None:
     fake = recorded_github
     pull = recorded_pr
-    fake.raise_on_comment = GithubException(403, {"message": "Forbidden"}, None)
+    fake.raise_on_review = GithubException(403, {"message": "Forbidden"}, None)
     monkeypatch.setattr(github, "new_client", lambda: fake.client)
 
-    # --no-llm: this test is about GitHub comment-post failure, not about LLM
+    # --no-llm: this test is about GitHub review-post failure, not about LLM
     # explanations, and must not depend on whatever GROQ_API_KEY happens to be
-    # configured in the ambient environment running the suite.
+    # configured in the ambient environment running the suite. The fixture PR
+    # is BLOCKED regardless of the post failure — a posting failure must not
+    # hide a real blocking finding — so this exits EXIT_BLOCKED, not 0.
     assert (
         cli.main(
             ["review", "--repo", pull.repo, "--pr", str(pull.number), "--post-comment", "--no-llm"]
         )
-        == 0
+        == cli.EXIT_BLOCKED
     )
     assert "Not fully analyzed" in capsys.readouterr().out
 
@@ -185,7 +195,10 @@ def test_ingestion_failure_is_fail_soft_reports_no_fake_findings_and_never_print
     fake.raise_on_pull = GithubException(401, {"message": f"Bad credentials {token}"}, None)
     monkeypatch.setattr(github, "new_client", lambda: fake.client)
 
-    assert cli.main(["review", "--repo", pull.repo, "--pr", str(pull.number)]) == 0
+    # No reliable analysis was possible at all: FAILED, not PASS — the exit
+    # code must be able to distinguish "QueryGuard could not run" from "ran
+    # and found nothing", which the old exit-0-always behavior could not.
+    assert cli.main(["review", "--repo", pull.repo, "--pr", str(pull.number)]) == cli.EXIT_FAILED
     output = capsys.readouterr()
     assert token not in output.out
     assert token not in output.err
@@ -204,13 +217,14 @@ def test_ingestion_failure_reaches_the_caller_as_a_degraded_report_with_no_findi
     pull = recorded_pr
     fake.raise_on_pull = GithubException(404, {"message": "Not Found"}, None)
 
-    report = cli.review(pull.repo, pull.number, client=fake.client)
+    result = cli.review(pull.repo, pull.number, client=fake.client)
 
-    assert report.context.repo == pull.repo
-    assert report.context.pr_number == pull.number
-    assert report.queries == []
-    assert report.findings == []
-    assert any(stage.startswith("ingest:") for stage in report.degraded_stages)
+    assert result.report.context.repo == pull.repo
+    assert result.report.context.pr_number == pull.number
+    assert result.report.queries == []
+    assert result.report.findings == []
+    assert any(stage.startswith("ingest:") for stage in result.report.degraded_stages)
+    assert result.status is EnforcementStatus.FAILED
 
 
 def test_a_second_ingestion_failure_shape_is_also_fail_soft(
@@ -222,49 +236,55 @@ def test_a_second_ingestion_failure_shape_is_also_fail_soft(
     pull = recorded_pr
     fake.raise_on_files = TimeoutError("connect timed out")
 
-    report = cli.review(pull.repo, pull.number, client=fake.client)
+    result = cli.review(pull.repo, pull.number, client=fake.client)
 
-    assert report.queries == []
-    assert report.findings == []
-    assert any(stage.startswith("ingest:") for stage in report.degraded_stages)
+    assert result.report.queries == []
+    assert result.report.findings == []
+    assert any(stage.startswith("ingest:") for stage in result.report.degraded_stages)
 
 
-def test_an_ingestion_failure_still_attempts_to_post_a_degraded_comment(
+def test_an_ingestion_failure_still_attempts_to_post_a_degraded_review(
     recorded_github: RecordedGitHub, recorded_pr: RecordedPullRequest
 ) -> None:
-    # The comment target is `repo`/`pr_number` alone, known before ingestion ever
-    # runs — a total ingestion failure must not also forfeit the PR comment. Uses
-    # a failure in listing files, not in resolving the pull request itself, so
-    # the later `get_pull` inside the comment upsert is unaffected and can
-    # actually prove the post succeeds despite ingestion having failed.
+    # The review's target is `repo`/`pr_number` alone, known before ingestion
+    # ever runs — a total ingestion failure must not also forfeit the review.
+    # Uses a failure in listing files, not in resolving the pull request
+    # itself, so the later `get_pull` inside the review upsert is unaffected
+    # and can actually prove the post succeeds despite ingestion having
+    # failed.
     fake = recorded_github
     pull = recorded_pr
     fake.raise_on_files = GithubException(500, {"message": "Internal Server Error"}, None)
 
     cli.review(pull.repo, pull.number, client=fake.client, post_comment=True)
 
-    assert len(fake.comments) == 1
-    assert github.COMMENT_MARKER in fake.comments[0].body
+    assert len(fake.reviews) == 1
+    assert github.REVIEW_MARKER in fake.reviews[0].body
+    # FAILED never REQUEST_CHANGES: an infrastructure failure that prevented
+    # any reliable analysis is not evidence of a real problem in the pull
+    # request.
+    assert fake.reviews[0].state == "COMMENTED"
 
 
 def test_a_persistent_github_failure_degrades_both_ingestion_and_the_post(
     recorded_github: RecordedGitHub, recorded_pr: RecordedPullRequest
 ) -> None:
     # A bad token or a sustained outage blocks every call, not just the first —
-    # ingestion and the comment upsert both hit it. The two fail-soft layers must
-    # compose rather than one undoing the other: still no exception, no comment,
-    # both failures named.
+    # ingestion and the review upsert both hit it. The two fail-soft layers
+    # must compose rather than one undoing the other: still no exception, no
+    # review, both failures named.
     fake = recorded_github
     pull = recorded_pr
     fake.raise_on_pull = GithubException(401, {"message": "Bad credentials"}, None)
 
-    report = cli.review(pull.repo, pull.number, client=fake.client, post_comment=True)
+    result = cli.review(pull.repo, pull.number, client=fake.client, post_comment=True)
 
-    assert fake.comments == []
-    assert report.queries == []
-    assert report.findings == []
-    assert any(stage.startswith("ingest:") for stage in report.degraded_stages)
-    assert "post_comment" in report.degraded_stages
+    assert fake.reviews == []
+    assert result.report.queries == []
+    assert result.report.findings == []
+    assert any(stage.startswith("ingest:") for stage in result.report.degraded_stages)
+    assert "post_review" in result.report.degraded_stages
+    assert result.status is EnforcementStatus.FAILED
 
 
 def test_a_programming_bug_during_ingestion_still_fails_loudly(

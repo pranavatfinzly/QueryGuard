@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
@@ -160,6 +161,44 @@ class RecordedIssueComment:
         self.body = body
 
 
+#: The ``review.state`` GitHub reports back for a given submitted event — its
+#: own mapping, not QueryGuard's: ``github.integrations.github`` defines
+#: ``_STATE_FOR_EVENT`` with the same values because it observes this real
+#: behavior, not because this fake copies QueryGuard's internals.
+_REVIEW_STATE_FOR_EVENT = {
+    "REQUEST_CHANGES": "CHANGES_REQUESTED",
+    "COMMENT": "COMMENTED",
+    "APPROVE": "APPROVED",
+}
+
+
+class RecordedPullRequestReview:
+    """One Pull Request Review, shaped like ``github.PullRequestReview.PullRequestReview``.
+
+    Mutable the same way :class:`RecordedIssueComment` is: ``edit`` replaces
+    the body in place, and ``dismiss`` moves the review to the terminal
+    ``DISMISSED`` state and records the message GitHub would show, which is
+    how ``upsert_review``'s idempotency strategy is provable end to end.
+    """
+
+    _next_id: int = 1
+
+    def __init__(self, body: str, event: str) -> None:
+        self.id: int = RecordedPullRequestReview._next_id
+        RecordedPullRequestReview._next_id += 1
+        self.body: str = body
+        self.state: str = _REVIEW_STATE_FOR_EVENT[event]
+        self.submitted_at: datetime = datetime.now(UTC)
+        self.dismissal_message: str | None = None
+
+    def edit(self, body: str) -> None:
+        self.body = body
+
+    def dismiss(self, message: str) -> None:
+        self.state = "DISMISSED"
+        self.dismissal_message = message
+
+
 @dataclass
 class RecordedGitHub:
     """A PyGithub stand-in that answers from the recording and never uses a socket.
@@ -182,6 +221,8 @@ class RecordedGitHub:
     raise_on_files: BaseException | None = None
     raise_on_contents: BaseException | None = None
     raise_on_comment: BaseException | None = None
+    #: Raised by ``get_reviews`` / ``create_review``.
+    raise_on_review: BaseException | None = None
     #: Overrides the recorded entries, for cases the real PR does not contain.
     entries: tuple[Mapping[str, Any], ...] | None = None
 
@@ -191,6 +232,18 @@ class RecordedGitHub:
     repo_lookups: list[str] = field(default_factory=list)
     #: Mutable list of PR comments, for testing upsert_report_comment.
     comments: list[RecordedIssueComment] = field(default_factory=list)
+    #: Mutable list of PR reviews, for testing upsert_review.
+    reviews: list[RecordedPullRequestReview] = field(default_factory=list)
+    #: Paths ``get_git_tree`` reports. Empty means "derive it from
+    #: ``recorded.head_text``'s keys" — the common case for a candidate-
+    #: discovery test, which already has to populate ``head_text`` with every
+    #: file's content and should not also have to repeat its path list.
+    repository_tree: list[str] = field(default_factory=list)
+    #: Raised by ``get_git_tree``.
+    raise_on_tree: BaseException | None = None
+    #: Set to report a truncated tree, matching GitHub's own API behavior for
+    #: a very large repository.
+    tree_truncated: bool = False
 
     @property
     def client(self) -> Github:
@@ -212,11 +265,35 @@ class RecordedGitHub:
         return RecordedRepo(self)
 
 
+class RecordedGitTreeElement:
+    """One entry of ``get_git_tree(..., recursive=True).tree``, blob-typed."""
+
+    def __init__(self, path: str) -> None:
+        self.path = path
+        self.type = "blob"
+
+
+class RecordedGitTree:
+    """``github.GitTree.GitTree``, narrowed to what candidate discovery reads."""
+
+    def __init__(self, paths: Sequence[str], *, truncated: bool) -> None:
+        self.tree = [RecordedGitTreeElement(path) for path in paths]
+        self.truncated = truncated
+
+
 class RecordedRepo:
     """``github.Repository.Repository``, narrowed to what stage 1 calls."""
 
     def __init__(self, owner: RecordedGitHub) -> None:
         self._owner = owner
+
+    def get_git_tree(self, sha: str, recursive: bool = False) -> RecordedGitTree:
+        del sha, recursive  # unused: this fake answers from repository_tree regardless
+        owner = self._owner
+        if owner.raise_on_tree is not None:
+            raise owner.raise_on_tree
+        paths = owner.repository_tree or list(owner.recorded.head_text.keys())
+        return RecordedGitTree(paths, truncated=owner.tree_truncated)
 
     def get_pull(self, number: int) -> RecordedPull:
         if self._owner.raise_on_pull is not None:
@@ -268,6 +345,18 @@ class RecordedPull:
         comment = RecordedIssueComment(body)
         self._owner.comments.append(comment)
         return comment
+
+    def get_reviews(self) -> list[RecordedPullRequestReview]:
+        if self._owner.raise_on_review is not None:
+            raise self._owner.raise_on_review
+        return list(self._owner.reviews)
+
+    def create_review(self, *, body: str, event: str) -> RecordedPullRequestReview:
+        if self._owner.raise_on_review is not None:
+            raise self._owner.raise_on_review
+        review = RecordedPullRequestReview(body, event)
+        self._owner.reviews.append(review)
+        return review
 
 
 @pytest.fixture

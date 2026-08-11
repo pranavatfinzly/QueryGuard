@@ -125,7 +125,7 @@ def test_pr_head_schema_suppresses_unindexed_filter_when_the_pr_adds_an_index(
     fake = RecordedGitHub(recorded=recorded)
 
     with override_settings(liquibase_changelog_path=root):
-        report = cli.review(recorded.repo, recorded.number, client=fake.client, dry_run=True)
+        report = cli.review(recorded.repo, recorded.number, client=fake.client, dry_run=True).report
 
     assert report.queries  # TEST 10: the real pipeline actually extracted the query.
     assert not _has_unindexed_filter(report)
@@ -150,7 +150,7 @@ def test_pr_head_schema_flags_unindexed_filter_when_the_pr_drops_an_index(
     fake = RecordedGitHub(recorded=recorded)
 
     with override_settings(liquibase_changelog_path=root):
-        report = cli.review(recorded.repo, recorded.number, client=fake.client, dry_run=True)
+        report = cli.review(recorded.repo, recorded.number, client=fake.client, dry_run=True).report
 
     assert _has_unindexed_filter(report)
 
@@ -194,7 +194,7 @@ def test_pr_head_schema_resolves_a_new_changelog_file_added_via_its_aggregator(
     fake = RecordedGitHub(recorded=recorded)
 
     with override_settings(liquibase_changelog_path=root):
-        report = cli.review(recorded.repo, recorded.number, client=fake.client, dry_run=True)
+        report = cli.review(recorded.repo, recorded.number, client=fake.client, dry_run=True).report
 
     assert not _has_unindexed_filter(report)
 
@@ -219,7 +219,7 @@ def test_local_disk_schema_is_kept_when_the_pr_makes_only_query_changes(
     fake = RecordedGitHub(recorded=recorded)
 
     with override_settings(liquibase_changelog_path=root):
-        report = cli.review(recorded.repo, recorded.number, client=fake.client, dry_run=True)
+        report = cli.review(recorded.repo, recorded.number, client=fake.client, dry_run=True).report
 
     assert _has_unindexed_filter(report)
     # No Liquibase content was ever requested over the API: the local-disk
@@ -266,7 +266,7 @@ def test_aggregator_only_edit_does_not_replay_historical_changesets_as_new(
     fake = RecordedGitHub(recorded=recorded)
 
     with override_settings(liquibase_changelog_path=root):
-        report = cli.review(recorded.repo, recorded.number, client=fake.client, dry_run=True)
+        report = cli.review(recorded.repo, recorded.number, client=fake.client, dry_run=True).report
 
     assert not _has_unindexed_filter(report)
 
@@ -296,7 +296,7 @@ def test_raw_sql_only_schema_change_still_flags_unindexed_filter(
     fake = RecordedGitHub(recorded=recorded)
 
     with override_settings(liquibase_changelog_path=root):
-        report = cli.review(recorded.repo, recorded.number, client=fake.client, dry_run=True)
+        report = cli.review(recorded.repo, recorded.number, client=fake.client, dry_run=True).report
 
     assert _has_unindexed_filter(report)
 
@@ -320,7 +320,7 @@ def test_pr_head_rebuild_failure_falls_back_to_the_local_disk_schema(
     fake = RecordedGitHub(recorded=recorded)
 
     with override_settings(liquibase_changelog_path=root), caplog.at_level(logging.ERROR):
-        report = cli.review(recorded.repo, recorded.number, client=fake.client, dry_run=True)
+        report = cli.review(recorded.repo, recorded.number, client=fake.client, dry_run=True).report
 
     # The local-disk schema says the column IS indexed, so falling back to it
     # — rather than losing schema awareness — means no finding here.

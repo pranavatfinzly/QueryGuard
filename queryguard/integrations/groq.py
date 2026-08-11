@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from collections.abc import Mapping, Sequence
 
 import groq
@@ -37,6 +38,18 @@ __all__ = ["GroqExplanationProvider", "create_default_llm_provider"]
 
 logger = logging.getLogger(__name__)
 
+#: Shaped like a real Groq API key, so a diagnostic that echoes an error body
+#: (unlikely, but not this module's to trust) cannot leak one. Mirrors
+#: ``integrations/github.py::redact`` — same discipline, this module's own
+#: credential shape.
+_GROQ_KEY_SHAPED = re.compile(r"gsk_[A-Za-z0-9]{20,}")
+
+
+def _redact(text: str) -> str:
+    """Replace anything Groq-key-shaped in ``text`` before it reaches a log."""
+    return _GROQ_KEY_SHAPED.sub("<redacted>", text)
+
+
 #: Every network call this module makes carries this ceiling. Groq is an
 #: explanation layer, not the review itself — a hung request must not be able to
 #: hold up a PR check indefinitely.
@@ -46,6 +59,13 @@ _DEFAULT_TIMEOUT_SECONDS = 20.0
 #: four fields CLAUDE.md's PROMPT DESIGN section specifies, and nothing else —
 #: there is deliberately no `file`, `line`, `severity`, `confidence`, `query_id`,
 #: or `execution_count` field for the model to fill in.
+#:
+#: Sent below with `"strict": True` — per Groq's structured-outputs
+#: documentation, strict mode is supported only by `openai/gpt-oss-20b` and
+#: `openai/gpt-oss-120b` (see `config.py::DEFAULT_GROQ_MODEL`'s docstring). A
+#: `GROQ_MODEL` override naming any other model will 400 on every call; that
+#: failure is now diagnosable from the log line in `_explain_one` rather than
+#: a bare status code.
 _RESPONSE_JSON_SCHEMA: dict[str, object] = {
     "type": "object",
     "properties": {
@@ -181,8 +201,23 @@ class GroqExplanationProvider:
             logger.warning("groq: network error; skipping explanation for %s", where)
             return None
         except groq.APIStatusError as error:
+            # The status code alone ("API returned 400") is not diagnosable —
+            # it was all a real galaxy-payment run's logs ever carried, because
+            # this handler used to discard everything past error.status_code.
+            # Groq's own error message names the actual cause (an
+            # unsupported model, a schema Groq rejected, strict mode on a
+            # model that does not support it) — surface it, redacted the same
+            # way a GitHub error message is (never trusting a third-party
+            # string not to echo a credential back).
             logger.warning(
-                "groq: API returned %s; skipping explanation for %s", error.status_code, where
+                "groq: API returned %s; skipping explanation for %s: %s",
+                error.status_code,
+                where,
+                _redact(error.message),
+                extra={
+                    "status_code": error.status_code,
+                    "model": self._model,
+                },
             )
             return None
         except groq.GroqError:

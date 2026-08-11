@@ -93,7 +93,7 @@ def test_a_full_review_resolves_across_files_without_network(
         recorded_github.recorded.number,
         client=recorded_github.client,
         dry_run=True,
-    )
+    ).report
 
     assert "nplusone" not in report.degraded_stages
     # The recorded PR is a repository-only change, so there is no call site in it

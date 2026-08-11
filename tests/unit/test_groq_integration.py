@@ -10,9 +10,11 @@ one call the provider makes (``chat.completions.create``) and nothing else.
 from __future__ import annotations
 
 import json
+import logging
 from typing import cast
 
 import httpx
+import pytest
 from groq import APIConnectionError as GroqAPIConnectionError
 from groq import APIStatusError as GroqAPIStatusError
 from groq import APITimeoutError as GroqAPITimeoutError
@@ -171,6 +173,19 @@ def test_the_system_prompt_and_structured_output_are_sent() -> None:
     assert response_format["type"] == "json_schema"
 
 
+# --- Default model -----------------------------------------------------------------
+
+
+def test_the_default_model_supports_strict_structured_outputs() -> None:
+    # Pinned deliberately (like test_placeholders.py pins other constants): the
+    # request in groq.py is sent with "strict": True, which per Groq's own docs
+    # is only supported by openai/gpt-oss-20b and openai/gpt-oss-120b. The
+    # previous default, llama-3.3-70b-versatile, never supported strict mode —
+    # that mismatch, not (only) its later deprecation, is the direct cause of
+    # the "API returned 400" a real galaxy-payment run hit.
+    assert DEFAULT_GROQ_MODEL == "openai/gpt-oss-120b"
+
+
 # --- 2. Missing GROQ_API_KEY -------------------------------------------------------
 
 
@@ -272,6 +287,50 @@ def test_a_bare_api_status_error_is_skipped_not_raised() -> None:
     result = provider.explain_nplusone([(thing, finding_for(thing))])
 
     assert result == {}
+
+
+def test_a_400_logs_the_actual_diagnostic_not_just_the_status_code(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # The real defect a galaxy-payment run surfaced: this handler used to
+    # discard everything past error.status_code, so "API returned 400" in the
+    # log was undiagnosable without another live incident. Groq's own message
+    # (e.g. naming an unsupported model or an unsupported strict-mode request)
+    # must now reach the log record.
+    error = GroqAPIStatusError(
+        "This model does not support response format `json_schema`",
+        response=httpx.Response(400, request=_REQUEST),
+        body=None,
+    )
+    fake = FakeGroqClient(raises=error)
+    provider = provider_with(fake)
+    thing = candidate()
+
+    with caplog.at_level(logging.WARNING):
+        result = provider.explain_nplusone([(thing, finding_for(thing))])
+
+    assert result == {}
+    (record,) = [r for r in caplog.records if "API returned" in r.getMessage()]
+    assert "does not support response format" in record.getMessage()
+    assert record.status_code == 400
+
+
+def test_a_groq_key_shaped_string_in_an_error_message_is_redacted(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    key = "gsk_" + "A" * 40
+    error = GroqAPIStatusError(
+        f"invalid request for key {key}", response=httpx.Response(400, request=_REQUEST), body=None
+    )
+    fake = FakeGroqClient(raises=error)
+    provider = provider_with(fake)
+    thing = candidate()
+
+    with caplog.at_level(logging.WARNING):
+        provider.explain_nplusone([(thing, finding_for(thing))])
+
+    for record in caplog.records:
+        assert key not in record.getMessage()
 
 
 # --- 7. Malformed JSON -------------------------------------------------------------
