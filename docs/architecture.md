@@ -359,6 +359,21 @@ is the right one to state the requirement.
 
 ---
 
+## 6a. Liquibase schema discovery
+
+`unindexed-filter` and the implicit-cast half of `non-sargable` need real
+schema data, and no longer require `LIQUIBASE_CHANGELOG_PATH` to be configured
+by hand: `queryguard/db/discovery.py` finds a repository's own
+`db.liquibase.change-log` declaration in `application.properties`/`.yml` and
+hands the resolved root to the existing loader in `queryguard/db/liquibase.py`
+— one module answers "where is the root changelog?", the other (unchanged)
+answers "what schema does it produce?". See
+[docs/liquibase-schema-discovery.md](liquibase-schema-discovery.md) for the
+full behavior: precedence against the explicit environment variable, classpath
+resolution, PR-head reconstruction, and fallback/ambiguity handling.
+
+---
+
 ## 7. Invariants
 
 Product-level, from CLAUDE.md. Not weakened for convenience.

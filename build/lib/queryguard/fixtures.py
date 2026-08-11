@@ -40,9 +40,7 @@ def load_recorded_fixture(path: Path) -> tuple[RecordedPullRequest, Github]:
     """Load the existing fixture directory and return its read-only GitHub stand-in."""
     try:
         pull = json.loads((path / "sandbox-pull-request.json").read_text(encoding="utf-8"))
-        entries = json.loads(
-            (path / "sandbox-pull-request-files.json").read_text(encoding="utf-8")
-        )
+        entries = json.loads((path / "sandbox-pull-request-files.json").read_text(encoding="utf-8"))
         head_root = path / "sandbox-head"
         head_text = {
             item.relative_to(head_root).as_posix(): item.read_text(encoding="utf-8")

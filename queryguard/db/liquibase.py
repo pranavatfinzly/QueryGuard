@@ -55,12 +55,36 @@ cosmetic: ``fedwire_iso_details``'s ``local_instrument`` index is dropped and
 recreated three times across three files, and only processing them in
 declared order — not alphabetically, not file-by-file in isolation —
 reconstructs the real final state.
+
+PR-aware schema (rebuild-at-head, not delta-overlay)
+-----------------------------------------------------
+
+A pull request can change the changelog tree itself — add a ``createIndex``,
+drop one, add a wholly new included file. :func:`build_table_schemas_remote`
+answers "what does the schema look like once this pull request's Liquibase
+changes are applied" by re-walking the **complete** tree from a chosen root,
+sourced from ``read`` instead of local disk, exactly as :func:`build_table_schemas`
+already does for a local checkout. Given a ``read`` that fetches each file at
+the pull request's head commit, this reconstructs the tree's true final state
+directly — no bookkeeping of "which changesets are new" is needed, because the
+existing ordered walk already resolves create → drop → recreate correctly from
+nothing. That also means a modified aggregator file that reorders or edits
+``<include>`` lines without introducing new changesets cannot be mistaken for
+new schema changes: the walk only ever sees the changesets the head tree
+actually declares, once each, never replayed as if newly introduced.
+
+:func:`resolve_pr_changelog_touch` is the cheap gate in front of this: most
+pull requests never touch the changelog tree at all, and re-fetching every
+file over the network on every run would be wasteful. See its docstring for
+why checking the *locally resolvable* tree cannot miss a real touch.
 """
 
 from __future__ import annotations
 
 import logging
+import posixpath
 import xml.etree.ElementTree as ET
+from collections.abc import Callable, Collection, Iterable
 from pathlib import Path
 
 from queryguard.pipeline.static_rules.schema import (
@@ -72,11 +96,22 @@ from queryguard.pipeline.static_rules.schema import (
 
 __all__ = [
     "LiquibaseParseError",
+    "ReadChangelogFile",
     "build_table_schemas",
+    "build_table_schemas_remote",
     "load_liquibase_schema",
+    "load_liquibase_schema_remote",
     "load_schema_from_settings",
     "resolve_changelog_files",
+    "resolve_pr_changelog_touch",
+    "resolve_remote_changelog_files",
 ]
+
+#: Reads one changelog file's full text, addressed by a repo-relative POSIX path.
+#: Injected rather than hard-coded to a transport, so the same tree-walking logic
+#: in this module can be sourced from local disk or from a pull request's head
+#: commit over the GitHub API — see the module docstring's "PR-aware schema" section.
+ReadChangelogFile = Callable[[str], str]
 
 logger = logging.getLogger(__name__)
 
@@ -301,24 +336,21 @@ def _apply_drop_index(op: ET.Element, tables: dict[str, _TableState]) -> None:
     state.indexes.pop(index_name, None)
 
 
-def build_table_schemas(root: str | Path) -> dict[str, TableSchema]:
-    """Walk the changelog chain rooted at ``root`` into one :class:`TableSchema` per table.
+def _apply_items(items: Iterable[tuple[object, ET.Element]]) -> dict[str, TableSchema]:
+    """Walk collected ``(source, element)`` pairs, in document order, into schemas.
 
-    ``root`` is the top-level changelog Liquibase is configured to run — for
-    ``galaxy-payment-service`` that is
-    ``src/main/resources/db/payment-db-changelog.xml``, which resolves through
-    one more ``<include>`` into the real 38-file chain. Any changelog root
-    works: this function does not know or care that it came from that
-    repository specifically.
+    Shared by the local-disk and PR-head walks: once ``<include>`` resolution has
+    produced the same ordered sequence of ``<property>``/``<changeSet>`` elements,
+    everything downstream — change-type interpretation, property substitution,
+    ordering — is identical regardless of where the bytes came from. ``source`` is
+    carried alongside each element only because :func:`_collect` and
+    :func:`_collect_remote` already track it for their own path bookkeeping; this
+    function does not read it.
     """
-    files: list[Path] = []
-    items: list[tuple[Path, ET.Element]] = []
-    _collect(Path(root).resolve(), files, items, set())
-
     tables: dict[str, _TableState] = {}
     properties: dict[str, str] = {}
 
-    for _path, element in items:
+    for _source, element in items:
         if _local_tag(element) == "property":
             name, value = element.get("name"), element.get("value")
             if name and value is not None:
@@ -348,6 +380,22 @@ def build_table_schemas(root: str | Path) -> dict[str, TableSchema]:
     return {name: state.to_table_schema() for name, state in tables.items()}
 
 
+def build_table_schemas(root: str | Path) -> dict[str, TableSchema]:
+    """Walk the changelog chain rooted at ``root`` into one :class:`TableSchema` per table.
+
+    ``root`` is the top-level changelog Liquibase is configured to run — for
+    ``galaxy-payment-service`` that is
+    ``src/main/resources/db/payment-db-changelog.xml``, which resolves through
+    one more ``<include>`` into the real 38-file chain. Any changelog root
+    works: this function does not know or care that it came from that
+    repository specifically.
+    """
+    files: list[Path] = []
+    items: list[tuple[Path, ET.Element]] = []
+    _collect(Path(root).resolve(), files, items, set())
+    return _apply_items(items)
+
+
 def load_liquibase_schema(root: str | Path) -> StaticSchemaProvider:
     """Build a :class:`StaticSchemaProvider` from a Liquibase changelog chain.
 
@@ -356,6 +404,129 @@ def load_liquibase_schema(root: str | Path) -> StaticSchemaProvider:
     ready to hand to :class:`~queryguard.pipeline.static_rules.engine.RuleEngine`.
     """
     return StaticSchemaProvider(build_table_schemas(root))
+
+
+def _collect_remote(
+    path: str,
+    files: list[str],
+    items: list[tuple[str, ET.Element]],
+    seen: set[str],
+    read: ReadChangelogFile,
+) -> None:
+    """The :func:`_collect` walk, sourced from ``read`` over repo-relative POSIX paths.
+
+    ``<include>`` resolution, ordering, and cycle guarding mirror ``_collect``
+    exactly; the only difference is that a path is a POSIX string joined with
+    :mod:`posixpath` instead of a filesystem :class:`~pathlib.Path` resolved
+    against a real directory, because a pull request's head commit has no
+    filesystem to resolve against.
+    """
+    normalized = posixpath.normpath(path)
+    if normalized in seen:
+        return
+    seen.add(normalized)
+    files.append(normalized)
+
+    try:
+        text = read(normalized)
+    except Exception as error:
+        # `read` is caller-supplied — a GitHub content fetch pinned to a specific
+        # commit in production, a recorded fixture in tests — and this module has
+        # no business knowing the shape of its failures. Folding every failure into
+        # LiquibaseParseError gives callers one exception to handle regardless of
+        # where the changelog came from, matching what `_collect` already does for
+        # a local OSError.
+        msg = f"could not read changelog {normalized}: {error}"
+        raise LiquibaseParseError(msg) from error
+
+    try:
+        root_element = ET.fromstring(text)
+    except ET.ParseError as error:
+        msg = f"{normalized} is not well-formed XML: {error}"
+        raise LiquibaseParseError(msg) from error
+
+    for child in root_element:
+        tag = _local_tag(child)
+        if tag in ("property", "changeSet"):
+            items.append((normalized, child))
+        elif tag == "include":
+            file_attr = child.get("file")
+            if not file_attr:
+                continue
+            relative = child.get("relativeToChangelogFile", "false").strip().lower() == "true"
+            base_dir = posixpath.dirname(normalized) if relative else posixpath.dirname(files[0])
+            target = posixpath.normpath(posixpath.join(base_dir, file_attr))
+            _collect_remote(target, files, items, seen, read)
+        # <includeAll> and anything else at changelog root level: not implemented,
+        # matching `_collect` — see the module docstring.
+
+
+def resolve_remote_changelog_files(root: str, read: ReadChangelogFile) -> list[str]:
+    """Every changelog path reachable from ``root``, sourced from ``read``, in
+    first-encountered order — the PR-head analogue of :func:`resolve_changelog_files`.
+    """
+    files: list[str] = []
+    items: list[tuple[str, ET.Element]] = []
+    _collect_remote(posixpath.normpath(root), files, items, set(), read)
+    return files
+
+
+def build_table_schemas_remote(root: str, read: ReadChangelogFile) -> dict[str, TableSchema]:
+    """Like :func:`build_table_schemas`, but walks the changelog chain via ``read``.
+
+    Used to rebuild the schema exactly as it stands at a pull request's head
+    commit: the same ordered, ``<include>``-resolving walk, sourced from the
+    network instead of a checkout. See the module docstring's "PR-aware schema"
+    section for why this is a full rebuild rather than a delta applied to a base
+    schema.
+    """
+    files: list[str] = []
+    items: list[tuple[str, ET.Element]] = []
+    _collect_remote(posixpath.normpath(root), files, items, set(), read)
+    return _apply_items(items)
+
+
+def load_liquibase_schema_remote(root: str, read: ReadChangelogFile) -> StaticSchemaProvider:
+    """The PR-head analogue of :func:`load_liquibase_schema`."""
+    return StaticSchemaProvider(build_table_schemas_remote(root, read))
+
+
+def resolve_pr_changelog_touch(root: str | Path, changed_paths: Collection[str]) -> bool:
+    """Whether any of ``changed_paths`` falls inside the changelog tree at ``root``.
+
+    A cheap gate in front of :func:`build_table_schemas_remote`: most pull requests
+    never touch the changelog tree, and re-fetching every file over the network on
+    every run to find that out would be wasteful. ``changed_paths`` are repo-relative,
+    as GitHub reports them (e.g. from a pull request's changed-file list); ``root``
+    is resolved on local disk, exactly as :func:`resolve_changelog_files` already does.
+
+    This cannot produce a false negative. A change that alters the tree's *shape* —
+    a new ``<include>``, a reordered one, a brand-new file — necessarily edits some
+    file already in the tree, because nothing outside the tree is reachable from
+    ``root`` to begin with; that edited file is what this function catches. A false
+    positive only costs one avoidable rebuild, not a wrong answer.
+
+    Returns ``False``, rather than raising, when the local tree cannot be resolved
+    at all (no checkout, a bad path) — the caller's fallback in that case is the
+    local-disk schema, which is already unusable, so there is nothing here worth
+    detecting.
+    """
+    try:
+        local_files = resolve_changelog_files(root)
+    except LiquibaseParseError:
+        return False
+
+    repo_root = Path.cwd()
+    local_relative: set[str] = set()
+    for file_path in local_files:
+        try:
+            local_relative.add(file_path.relative_to(repo_root).as_posix())
+        except ValueError:
+            # Outside the working directory entirely — cannot correspond to any
+            # GitHub-reported path, so it cannot match and is not an error.
+            continue
+
+    return not local_relative.isdisjoint(changed_paths)
 
 
 def load_schema_from_settings(changelog_path: str | None) -> SchemaProvider:

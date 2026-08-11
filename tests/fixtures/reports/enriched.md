@@ -4,11 +4,15 @@
 
 Reviewed 2 queries and found 2 problems.
 
+*Static analysis only: every finding below comes from the query's source text, not a measured execution plan — nothing in this change was run against a database.*
+
 ### 🟠 High
 
 #### Repository call inside a loop issues one query per row
 
 **Where:** `src/ReportingService.java:52` (`buildSummaries`), with `src/ReportingService.java:48`
+
+*Inferred query shape, from the method name — not the literal SQL Spring Data will issue:*
 
 ```sql
 SELECT *
@@ -40,6 +44,8 @@ SELECT * FROM orders WHERE customer_id IN (:ids);
 #### Filter on `orders.customer_id`, which has no index
 
 **Where:** `src/OrderRepository.java:31` (`findByCustomerId`)
+
+*Inferred query shape, from the method name — not the literal SQL Spring Data will issue:*
 
 ```sql
 SELECT *

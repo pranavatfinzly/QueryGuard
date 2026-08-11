@@ -18,8 +18,6 @@ from queryguard.models import ExtractedQuery, Provenance, QueryKind
 from queryguard.pipeline import (
     explain,
     hypopg,
-    nplusone,
-    report,
     static_rules,
 )
 
@@ -27,8 +25,6 @@ UNIMPLEMENTED: list[tuple[Callable[..., Any], tuple[Any, ...]]] = [
     (explain.explain_analyze, (None, None)),
     (explain.analyze_plan, (None, {})),
     (hypopg.simulate_indexes, (None, None, {})),
-    (nplusone.detect_n_plus_one, ([], "")),
-    (report.rank_findings, ([],)),
     (claude.request_findings, ("sys", "user")),
 ]
 

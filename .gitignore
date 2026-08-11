@@ -11,6 +11,7 @@ target/
 .venv/
 venv/
 *.egg-info/
+build/
 
 # `target/` above also covers the generated p6spy statement log
 # (queryguard-sandbox/target/p6spy-statements.log). A small captured excerpt is

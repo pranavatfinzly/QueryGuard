@@ -229,6 +229,29 @@ def test_derived_methods_after_a_default_method_are_still_found() -> None:
     assert [query.provenance.symbol for query in queries] == ["findByEmail", "countByStatus"]
 
 
+def test_a_default_method_calling_a_derived_method_is_not_extracted_twice() -> None:
+    # `findByCustomerId(id).stream()...;` satisfies the declaration pattern just
+    # as `findByCustomerId(Long id);` does: both close their own parens before the
+    # line's final `;`. Without a way to tell them apart, the call site inside the
+    # default method's body would be extracted as a second, phantom declaration of
+    # the same method — at the wrong line, and duplicated in the report.
+    content = """public interface OrderRepository {
+    List<Order> findByCustomerId(Long id);
+
+    default List<Order> findRecentByCustomer(Long id) {
+        return findByCustomerId(id).stream().limit(10).toList();
+    }
+
+    List<Order> findByStatus(String status);
+}
+"""
+
+    queries = extract_java("OrderRepository.java", content)
+
+    assert [query.provenance.symbol for query in queries] == ["findByCustomerId", "findByStatus"]
+    assert [query.provenance.line for query in queries] == [2, 8]
+
+
 def test_a_brace_inside_a_string_does_not_end_the_interface_body() -> None:
     content = """public interface CustomerRepository {
     String MARKER = "}";

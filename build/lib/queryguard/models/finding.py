@@ -66,5 +66,8 @@ class Finding(Contract):
     suggestions: list[Suggestion] = Field(default_factory=list)
     confidence: float | None = Field(
         default=None,
-        description="Set for LLM-derived findings that could not be verified.",
+        description="Set when a finding could not be verified against real SQL or a "
+        "real plan — an LLM-derived claim, or a static finding raised against a Spring "
+        "Data derived-method's rendered pseudo-SQL rather than a query the application "
+        "will actually issue.",
     )

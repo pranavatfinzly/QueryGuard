@@ -102,6 +102,26 @@ def test_head_reads_are_pinned_to_the_head_sha(
     assert {ref for _, ref in recorded_github.head_reads} == {recorded_pr.head_sha}
 
 
+def test_read_file_at_ref_is_pinned_to_the_ref_it_is_given(
+    recorded_github: RecordedGitHub, recorded_pr: RecordedPullRequest
+) -> None:
+    # read_head_file is one caller of this building block, pinned to head_sha.
+    # The PR-head Liquibase rebuild in queryguard.cli is another, and must be
+    # able to pin to an explicit SHA rather than only ever reading the head of
+    # whatever context it is given.
+    context = github.fetch_pull_request(
+        recorded_pr.repo, recorded_pr.number, client=recorded_github.client
+    )
+    path = recorded_pr.path(ORDER_REPOSITORY)
+
+    text = github.read_file_at_ref(
+        context, path, ref=recorded_pr.head_sha, client=recorded_github.client
+    )
+
+    assert text == recorded_pr.head_text[path]
+    assert (path, recorded_pr.head_sha) in recorded_github.head_reads
+
+
 def test_reading_head_without_a_head_sha_is_refused(recorded_github: RecordedGitHub) -> None:
     # Falling back to the default branch here would analyze a different tree and
     # report line numbers against a file the pull request never contained.
@@ -473,6 +493,7 @@ def test_second_run_edits_rather_than_creates(
     # Create a second report with a critical finding to ensure the edit updates the body
     from queryguard.models.finding import Finding, Severity
     from queryguard.models.query import Provenance
+
     finding = Finding(
         rule_id="missing-where",
         severity=Severity.CRITICAL,
@@ -498,6 +519,7 @@ def test_changed_comment_marker_is_not_matched(
     )
     # If the user edits the comment or the COMMENT_MARKER changes, the old comment is orphaned.
     from tests.conftest import RecordedIssueComment
+
     old_comment = RecordedIssueComment("<!-- queryguard:old-report -->\nBody")
     recorded_github.comments.append(old_comment)
 
@@ -530,16 +552,20 @@ def test_queryguard_never_pushes_edits_files_or_approves() -> None:
     # We inspect the AST of queryguard/integrations/github.py for prohibited PyGithub calls.
     source = (PACKAGE / "integrations" / "github.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
-    
-    attributes = {
-        node.attr
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Attribute)
-    }
+
+    attributes = {node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)}
 
     prohibited = {
-        "merge", "create_commit", "update_file", "create_review", "create_git_ref",
-        "delete_ref", "create_pull", "create_git_tag", "create_issue", "add_to_collaborators"
+        "merge",
+        "create_commit",
+        "update_file",
+        "create_review",
+        "create_git_ref",
+        "delete_ref",
+        "create_pull",
+        "create_git_tag",
+        "create_issue",
+        "add_to_collaborators",
     }
 
     intersection = attributes.intersection(prohibited)

@@ -290,6 +290,7 @@ def test_an_exploding_runner_does_not_leak_a_stack_trace(
             pr_number: int,
             sources: Sequence[SourceFile],
             run_id: str | None = None,
+            **kwargs: Any,
         ) -> Report:
             raise RuntimeError("connection string postgres://user:hunter2@db/prod")
 

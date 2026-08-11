@@ -277,7 +277,7 @@ def upsert_report_comment(
                         "pr_number": context.pr_number,
                     },
                 )
-                return comment.id  # type: ignore[return-value]
+                return comment.id
 
         created = pull.create_issue_comment(body)
         logger.info(
@@ -291,7 +291,7 @@ def upsert_report_comment(
                 "pr_number": context.pr_number,
             },
         )
-        return created.id  # type: ignore[return-value]
+        return created.id
 
 
 class _guard:

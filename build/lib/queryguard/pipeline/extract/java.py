@@ -50,7 +50,12 @@ def extract_java(path: str, content: str) -> list[ExtractedQuery]:
     annotations = _annotations(source)
     candidates = [
         *[
-            _Candidate(offset, source.line_at(value_start), QueryKind.SQL if native else QueryKind.JPQL, text)
+            _Candidate(
+                offset,
+                source.line_at(value_start),
+                QueryKind.SQL if native else QueryKind.JPQL,
+                text,
+            )
             for offset, text, value_start, native, _ in annotations
         ],
         *_derived_candidates(source, _annotation_extents(source)),
@@ -58,7 +63,9 @@ def extract_java(path: str, content: str) -> list[ExtractedQuery]:
     candidates.sort(key=lambda candidate: candidate.offset)
     return [
         ExtractedQuery(
-            id=symbol_query_id(path, candidate.symbol) if candidate.symbol else query_id(path, ordinal),
+            id=symbol_query_id(path, candidate.symbol)
+            if candidate.symbol
+            else query_id(path, ordinal),
             kind=candidate.kind,
             text=candidate.text,
             provenance=Provenance(file=path, line=candidate.line, symbol=candidate.symbol),
@@ -164,7 +171,9 @@ def _literal(source: JavaSource, start: int, end: int) -> tuple[str, int] | None
     while index < end:
         character = source.text[index]
         if character == '"':
-            return ("".join(pieces), start + 1) if not source.text[index + 1 : end].strip() else None
+            return (
+                ("".join(pieces), start + 1) if not source.text[index + 1 : end].strip() else None
+            )
         if character in "\r\n":
             return None
         if character == "\\" and index + 1 < end:
@@ -189,6 +198,17 @@ def _derived_candidates(source: JavaSource, annotated: list[tuple[int, int]]) ->
             start = body_start + method.start()
             if _is_annotated(start, annotated, source):
                 continue
+            if ")." in method.group(0):
+                # Not a declaration: a `default` method's body calling a derived
+                # method — `findByCustomerId(id).stream()...;` — satisfies the
+                # declaration pattern too, since its own parens close before the
+                # line's final `;` just as a parameter list's would. A real
+                # parameter list never has `)` immediately followed by `.`: Java
+                # allows no method chaining inside a signature, only annotation
+                # arguments, generics, and parameter names. That is the cheapest
+                # textual fact that tells the two apart without tracking brace
+                # depth through the whole interface body.
+                continue
             derived = parse_derived_query(method.group("method"))
             if derived is not None:
                 candidates.append(
@@ -205,6 +225,8 @@ def _derived_candidates(source: JavaSource, annotated: list[tuple[int, int]]) ->
 
 def _is_annotated(method_start: int, annotated: list[tuple[int, int]], source: JavaSource) -> bool:
     index = bisect.bisect_right(annotated, (method_start, method_start)) - 1
-    return index >= 0 and annotated[index][1] <= method_start and source.is_blank_between(
-        annotated[index][1], method_start
+    return (
+        index >= 0
+        and annotated[index][1] <= method_start
+        and source.is_blank_between(annotated[index][1], method_start)
     )

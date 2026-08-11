@@ -164,7 +164,8 @@ suite drives it with the sandbox's real index layout.
   otherwise. Returns the `comment_id` in the response. A GitHub API failure degrades
   the run and still returns the report.
 - **Refuses rather than ignores** unimplemented options: `diff` returns **501**.
-  Answering "no problems found" to input that was never read is the one failure mode
+  Answering "no problems found" 
+  to input that was never read is the one failure mode
   a review bot cannot have.
 - Validation is preserved (422 on `pr_number: 0`, on missing fields).
 - Does not leak tracebacks or exception payloads on a 500.
@@ -944,3 +945,5 @@ closes TD-2 and TD-5 and makes invariant 4 real.
 **To 9.5:** land stages 4–6 with integration tests behind the `integration` marker,
 which closes TD-1 by putting the `BEGIN`/`ROLLBACK` guarantee under test, and makes
 the two dormant schema-dependent rules live.
+
+n+ 1, claude integration. 

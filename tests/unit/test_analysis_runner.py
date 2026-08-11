@@ -17,6 +17,7 @@ from queryguard.models import Finding, Severity, SourceFile, SqlSource
 from queryguard.models.query import ExtractedQuery
 from queryguard.pipeline import runner as runner_module
 from queryguard.pipeline.extract import extract_source
+from queryguard.pipeline.report import DEFAULT_MAX_FINDINGS
 from queryguard.pipeline.runner import STATIC_RULES_STAGE, AnalysisRunner
 from queryguard.pipeline.static_rules import RuleEngine
 
@@ -135,6 +136,31 @@ def test_a_failing_rule_engine_degrades_the_stage_and_keeps_the_queries() -> Non
     assert [query.id for query in report.queries] == ["a.sql:1"]
     assert report.findings == []
     assert report.degraded_stages == [STATIC_RULES_STAGE]
+
+
+def test_findings_beyond_the_default_cap_are_omitted_not_lost() -> None:
+    sources = [
+        SqlSource(path=f"f{i}.sql", content="SELECT * FROM t WHERE id = 1")
+        for i in range(DEFAULT_MAX_FINDINGS + 1)
+    ]
+
+    report = AnalysisRunner().run(repo="acme/billing-service", pr_number=42, sources=sources)
+
+    assert len(report.findings) == DEFAULT_MAX_FINDINGS
+    assert report.omitted_findings == 1
+
+
+def test_max_findings_is_configurable_per_run() -> None:
+    sources = [
+        SqlSource(path=f"f{i}.sql", content="SELECT * FROM t WHERE id = 1") for i in range(5)
+    ]
+
+    report = AnalysisRunner().run(
+        repo="acme/billing-service", pr_number=42, sources=sources, max_findings=2
+    )
+
+    assert len(report.findings) == 2
+    assert report.omitted_findings == 3
 
 
 def test_no_sources_is_a_clean_empty_run() -> None:

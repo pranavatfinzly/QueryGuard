@@ -4,6 +4,8 @@
 
 Reviewed 2 queries and found 2 problems. **Part of this change could not be reviewed — see below.**
 
+*Static analysis only: every finding below comes from the query's source text, not a measured execution plan — nothing in this change was run against a database.*
+
 ### ⚠️ Not fully analyzed
 
 These stages failed and were skipped, so this report covers less than the change does. Everything below is still accurate — it is just not everything.

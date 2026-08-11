@@ -4,6 +4,7 @@ pydantic-settings
 sqlglot
 psycopg2-binary
 anthropic
+groq
 pygithub
 pytest
 

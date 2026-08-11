@@ -27,13 +27,25 @@ jobs:
       - name: Review pull request
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Path to the checked-out repository's root Liquibase changelog, e.g.
-          # src/main/resources/db/payment-db-changelog.xml for galaxy-payment-service.
-          # Set as a repository (or organization) Actions variable per consumer —
-          # this workflow file does not change per repo. Unset means no schema is
-          # available and every schema-dependent static rule stays silent, exactly
-          # as before this variable existed.
+          # Optional explicit override. QueryGuard automatically discovers a
+          # standard Spring Boot repository's root Liquibase changelog from its
+          # own db.liquibase.change-log declaration in application.properties/
+          # .yml — this variable is not required for that to work. Set it only
+          # to force a specific path (e.g. for a non-standard layout, or a
+          # repository with more than one application.properties declaring
+          # different changelogs) as a repository (or organization) Actions
+          # variable per consumer. See docs/liquibase-schema-discovery.md.
           LIQUIBASE_CHANGELOG_PATH: ${{ vars.LIQUIBASE_CHANGELOG_PATH }}
+          # Optional. When set, N+1 findings are enriched with Groq-authored prose
+          # (see CLAUDE.md's Claude/LLM integration notes); unset means the review
+          # is exactly as deterministic as it was before this secret existed — no
+          # code path here changes based on whether it is configured. Never put
+          # the key in this file; set it as a repository (or organization) secret
+          # per consumer, the same way GITHUB_TOKEN is.
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          # Optional. Overrides the default Groq model; unset uses QueryGuard's
+          # own default.
+          GROQ_MODEL: ${{ vars.GROQ_MODEL }}
         run: >-
           queryguard review
           --repo ${{ github.repository }}

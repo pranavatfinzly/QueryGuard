@@ -8,6 +8,7 @@ import pytest
 
 from queryguard.models.finding import Finding, Severity
 from queryguard.models.query import ExtractedQuery, Provenance, QueryKind
+from queryguard.pipeline.extract.derived import parse_derived_method
 from queryguard.pipeline.static_rules import (
     RULES,
     RuleContext,
@@ -16,6 +17,7 @@ from queryguard.pipeline.static_rules import (
     run_static_rules,
 )
 from queryguard.pipeline.static_rules.engine import (
+    _INFERRED_CONFIDENCE,
     _CommandFallbackFilter,
     silence_sqlglot_fallback_warnings,
 )
@@ -213,6 +215,51 @@ def test_registering_two_rules_with_the_same_id_is_rejected() -> None:
         register(Duplicate())
 
     assert before == RULES
+
+
+def test_findings_against_a_derived_method_are_marked_unverified() -> None:
+    # `findByCustomerId` on a `@ManyToOne` compiles to a JOIN Spring Data issues and
+    # this renderer cannot see (CLAUDE.md's caution). The rendered pseudo-SQL still
+    # says `SELECT * FROM ...`, so `select-star` still fires — but the finding must
+    # not be presented as a claim about SQL the application actually runs.
+    derived = parse_derived_method("findByCustomerId", entity="OrderRepository", path="Repo.java")
+    assert derived is not None
+
+    findings = RuleEngine().analyze([derived])
+
+    assert [finding.rule_id for finding in findings] == ["select-star"]
+    assert findings[0].confidence == _INFERRED_CONFIDENCE
+
+
+def test_findings_against_real_sql_are_not_marked_unverified() -> None:
+    findings = RuleEngine().analyze([_query("SELECT * FROM orders")])
+
+    assert findings[0].confidence is None
+
+
+def test_a_rules_own_confidence_on_a_derived_method_is_not_overridden() -> None:
+    class _ConfidentRule:
+        rule_id = "confident"
+
+        def check(self, context: RuleContext) -> list[Finding]:
+            return [
+                Finding(
+                    rule_id="confident",
+                    severity=Severity.LOW,
+                    title="t",
+                    explanation="e",
+                    impact="i",
+                    provenance=Provenance(file="Repo.java", line=1),
+                    confidence=0.9,
+                )
+            ]
+
+    derived = parse_derived_method("findByCustomerId", entity="OrderRepository", path="Repo.java")
+    assert derived is not None
+
+    findings = RuleEngine(rules=[_ConfidentRule()]).analyze([derived])
+
+    assert findings[0].confidence == 0.9
 
 
 def test_a_rule_with_a_new_id_still_registers() -> None:

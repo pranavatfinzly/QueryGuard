@@ -36,7 +36,9 @@ def test_review_parser_rejects_invalid_pr_numbers(number: str) -> None:
         cli.build_parser().parse_args(["review", "--repo", "acme/billing", "--pr", number])
 
 
-@pytest.mark.parametrize("repo", ["acme", "acme/", "/billing", "acme/billing/extra", "acme billing"])
+@pytest.mark.parametrize(
+    "repo", ["acme", "acme/", "/billing", "acme/billing/extra", "acme billing"]
+)
 def test_review_parser_rejects_invalid_repository_format(repo: str) -> None:
     with pytest.raises(SystemExit, match="2"):
         cli.build_parser().parse_args(["review", "--repo", repo, "--pr", "42"])
@@ -55,12 +57,17 @@ def test_review_runs_recorded_fixture_without_network_and_preserves_ingest_conte
     assert fake.comments == []
 
 
-def test_main_prints_rendered_markdown(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+def test_main_prints_rendered_markdown(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
     report = Report(context=RunContext(run_id="r", repo="acme/billing", pr_number=1))
     monkeypatch.setattr(cli, "review", lambda *args, **kwargs: report)
 
     assert cli.main(["review", "--repo", "acme/billing", "--pr", "1"]) == 0
-    assert capsys.readouterr().out == "<!-- queryguard:report -->\n\n## QueryGuard\n\nNo queries were found in this change.\n"
+    assert (
+        capsys.readouterr().out
+        == "<!-- queryguard:report -->\n\n## QueryGuard\n\nNo queries were found in this change.\n"
+    )
 
 
 def test_post_comment_creates_then_updates_one_comment(
@@ -115,7 +122,9 @@ def test_offline_fixture_dry_run_needs_no_token_network_or_writes(
     assert rendered.startswith("<!-- queryguard:report -->\n\n## QueryGuard\n")
     assert "Reviewed 20 queries and found 15 problems." in rendered
     # The fixture client intentionally has no comment API at all.
-    assert not hasattr(client.get_repo(recorded.repo).get_pull(recorded.number), "create_issue_comment")
+    assert not hasattr(
+        client.get_repo(recorded.repo).get_pull(recorded.number), "create_issue_comment"
+    )
 
 
 def test_fixture_mode_refuses_comment_posting() -> None:
@@ -148,33 +157,142 @@ def test_comment_failure_is_fail_soft_and_the_report_is_still_printed(
     fake.raise_on_comment = GithubException(403, {"message": "Forbidden"}, None)
     monkeypatch.setattr(github, "new_client", lambda: fake.client)
 
-    assert cli.main(["review", "--repo", pull.repo, "--pr", str(pull.number), "--post-comment"]) == 0
+    # --no-llm: this test is about GitHub comment-post failure, not about LLM
+    # explanations, and must not depend on whatever GROQ_API_KEY happens to be
+    # configured in the ambient environment running the suite.
+    assert (
+        cli.main(
+            ["review", "--repo", pull.repo, "--pr", str(pull.number), "--post-comment", "--no-llm"]
+        )
+        == 0
+    )
     assert "Not fully analyzed" in capsys.readouterr().out
 
 
-def test_github_failure_is_safe_and_never_prints_a_token(
+def test_ingestion_failure_is_fail_soft_reports_no_fake_findings_and_never_prints_a_token(
     recorded_github: RecordedGitHub,
     recorded_pr: RecordedPullRequest,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    # GitHub being unreachable while resolving the PR — expired credentials, a
+    # rate limit, a transient outage — is not a QueryGuard bug (CLAUDE.md
+    # invariant 5): it must degrade, not fail the check, and it must not claim a
+    # review that never happened by rendering an empty "no problems" comment.
     fake = recorded_github
     pull = recorded_pr
     token = "ghp_" + "Z" * 36
     fake.raise_on_pull = GithubException(401, {"message": f"Bad credentials {token}"}, None)
     monkeypatch.setattr(github, "new_client", lambda: fake.client)
 
-    assert cli.main(["review", "--repo", pull.repo, "--pr", str(pull.number)]) == 1
+    assert cli.main(["review", "--repo", pull.repo, "--pr", str(pull.number)]) == 0
     output = capsys.readouterr()
     assert token not in output.out
     assert token not in output.err
-    assert "<redacted>" in output.err
+    assert "<redacted>" in output.out
+
+    assert "QueryGuard could not analyze this pull request" in output.out
+    assert "No problems" not in output.out
+    assert "```sql" not in output.out  # no query text: nothing was ever read
+    assert "ingest" in output.out
+
+
+def test_ingestion_failure_reaches_the_caller_as_a_degraded_report_with_no_findings(
+    recorded_github: RecordedGitHub, recorded_pr: RecordedPullRequest
+) -> None:
+    fake = recorded_github
+    pull = recorded_pr
+    fake.raise_on_pull = GithubException(404, {"message": "Not Found"}, None)
+
+    report = cli.review(pull.repo, pull.number, client=fake.client)
+
+    assert report.context.repo == pull.repo
+    assert report.context.pr_number == pull.number
+    assert report.queries == []
+    assert report.findings == []
+    assert any(stage.startswith("ingest:") for stage in report.degraded_stages)
+
+
+def test_a_second_ingestion_failure_shape_is_also_fail_soft(
+    recorded_github: RecordedGitHub, recorded_pr: RecordedPullRequest
+) -> None:
+    # fetch_changed_files, not fetch_pull_request, is the one that fails here —
+    # both unguarded calls inside ingest_pull_request must degrade the same way.
+    fake = recorded_github
+    pull = recorded_pr
+    fake.raise_on_files = TimeoutError("connect timed out")
+
+    report = cli.review(pull.repo, pull.number, client=fake.client)
+
+    assert report.queries == []
+    assert report.findings == []
+    assert any(stage.startswith("ingest:") for stage in report.degraded_stages)
+
+
+def test_an_ingestion_failure_still_attempts_to_post_a_degraded_comment(
+    recorded_github: RecordedGitHub, recorded_pr: RecordedPullRequest
+) -> None:
+    # The comment target is `repo`/`pr_number` alone, known before ingestion ever
+    # runs — a total ingestion failure must not also forfeit the PR comment. Uses
+    # a failure in listing files, not in resolving the pull request itself, so
+    # the later `get_pull` inside the comment upsert is unaffected and can
+    # actually prove the post succeeds despite ingestion having failed.
+    fake = recorded_github
+    pull = recorded_pr
+    fake.raise_on_files = GithubException(500, {"message": "Internal Server Error"}, None)
+
+    cli.review(pull.repo, pull.number, client=fake.client, post_comment=True)
+
+    assert len(fake.comments) == 1
+    assert github.COMMENT_MARKER in fake.comments[0].body
+
+
+def test_a_persistent_github_failure_degrades_both_ingestion_and_the_post(
+    recorded_github: RecordedGitHub, recorded_pr: RecordedPullRequest
+) -> None:
+    # A bad token or a sustained outage blocks every call, not just the first —
+    # ingestion and the comment upsert both hit it. The two fail-soft layers must
+    # compose rather than one undoing the other: still no exception, no comment,
+    # both failures named.
+    fake = recorded_github
+    pull = recorded_pr
+    fake.raise_on_pull = GithubException(401, {"message": "Bad credentials"}, None)
+
+    report = cli.review(pull.repo, pull.number, client=fake.client, post_comment=True)
+
+    assert fake.comments == []
+    assert report.queries == []
+    assert report.findings == []
+    assert any(stage.startswith("ingest:") for stage in report.degraded_stages)
+    assert "post_comment" in report.degraded_stages
+
+
+def test_a_programming_bug_during_ingestion_still_fails_loudly(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The new try/except around ingestion catches exactly GitHubUnavailable. A bug
+    # in QueryGuard's own code — surfacing here as anything else, a TypeError
+    # stands in for one — must still reach the caller. Silently degrading that
+    # would hide a real QueryGuard failure behind a green check, which invariant 5
+    # exists to prevent, not cause.
+    def broken(*args: object, **kwargs: object) -> None:
+        raise TypeError("build_sources received the wrong shape")
+
+    monkeypatch.setattr("queryguard.pipeline.ingest.ingest_pull_request", broken)
+    # A client that is never actually used — `broken` raises before anything
+    # touches it — just present so `review` gets past needing a real token.
+    monkeypatch.setattr(github, "new_client", lambda: object())
+
+    assert cli.main(["review", "--repo", "acme/billing", "--pr", "1"]) == 1
+    assert "build_sources received the wrong shape" not in capsys.readouterr().err
 
 
 def test_unrecoverable_configuration_error_returns_nonzero(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    monkeypatch.setattr(cli, "review", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("secret")))
+    monkeypatch.setattr(
+        cli, "review", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("secret"))
+    )
 
     assert cli.main(["review", "--repo", "acme/billing", "--pr", "1"]) == 1
     assert "secret" not in capsys.readouterr().err
@@ -197,4 +315,13 @@ def test_cli_only_orchestrates_existing_pipeline_components() -> None:
     tree = ast.parse(Path("queryguard/cli.py").read_text(encoding="utf-8"))
     definitions = {node.name for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)}
 
-    assert not {"fetch_pull_request", "fetch_diff", "ingest", "render_markdown", "upsert_report_comment"} & definitions
+    assert (
+        not {
+            "fetch_pull_request",
+            "fetch_diff",
+            "ingest",
+            "render_markdown",
+            "upsert_report_comment",
+        }
+        & definitions
+    )

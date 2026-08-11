@@ -157,6 +157,14 @@ def test_decoding_rejects_grammar_it_does_not_understand(method_name: str) -> No
     assert parse_derived_query(method_name) is None
 
 
+def test_all_ignore_case_is_rejected_rather_than_read_as_a_property_named_all() -> None:
+    # `findByStatusAllIgnoreCase` is Spring Data's method-level "ignore case on
+    # every string property" keyword. Before this, `All` fell through to the
+    # per-property branch and rendered a column, `all`, that does not exist —
+    # exactly the guessed query the decoder's contract says it must not produce.
+    assert parse_derived_query("findByStatusAllIgnoreCase") is None
+
+
 def test_rendering_is_a_pure_function_of_the_semantics_and_the_table() -> None:
     derived = parse_derived_query("findByCustomerIdAndStatus")
 

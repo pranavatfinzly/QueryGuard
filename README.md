@@ -91,6 +91,11 @@ which half you get today.
 - **A sandbox with real bugs** — a Spring Boot fixture app carrying four planted
   performance bugs, each beside a healthy counterpart, so rules are tested for false
   positives as well as true ones.
+- **Automatic Liquibase schema discovery** — no `LIQUIBASE_CHANGELOG_PATH` needed
+  for a standard Spring Boot repository: QueryGuard finds `db.liquibase.change-log`
+  in `application.properties`/`.yml` on its own and loads the full changelog tree,
+  even when a pull request touches only a Java query and no schema file. See
+  [docs/liquibase-schema-discovery.md](docs/liquibase-schema-discovery.md).
 
 ### Coming soon
 

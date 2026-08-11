@@ -59,6 +59,7 @@ __all__ = [
     "fetch_diff",
     "fetch_pull_request",
     "new_client",
+    "read_file_at_ref",
     "read_head_file",
     "redact",
     "upsert_report_comment",
@@ -190,6 +191,27 @@ def fetch_changed_files(context: RunContext, *, client: Github | None = None) ->
         ]
 
 
+def read_file_at_ref(
+    context: RunContext, path: str, *, ref: str, client: Github | None = None
+) -> str:
+    """The text of ``path`` as it stands at commit ``ref``.
+
+    The building block behind :func:`read_head_file` and the PR-head Liquibase
+    rebuild in :mod:`queryguard.cli`: both need a specific commit's content, and a
+    SHA rather than a branch name, so a force-push mid-run cannot make two reads
+    describe two different trees.
+    """
+    resolved = _resolve(client)
+    with _guard(f"reading {path} at {ref[:8]}"):
+        contents = resolved.get_repo(context.repo).get_contents(path, ref=ref)
+        if isinstance(contents, list):
+            # A directory. Nothing in a changed-files list should resolve to one,
+            # so this is a bug or a path collision rather than a normal outcome.
+            msg = f"{path} is a directory at {ref[:8]}, not a file"
+            raise GitHubUnavailable(msg)
+        return contents.decoded_content.decode("utf-8", errors="replace")
+
+
 def read_head_file(context: RunContext, path: str, *, client: Github | None = None) -> str:
     """The text of ``path`` as it stands at the pull request's head commit.
 
@@ -201,16 +223,7 @@ def read_head_file(context: RunContext, path: str, *, client: Github | None = No
     if ref is None:
         msg = f"cannot read {path}: the run context carries no head SHA"
         raise GitHubUnavailable(msg)
-
-    resolved = _resolve(client)
-    with _guard(f"reading {path} at {ref[:8]}"):
-        contents = resolved.get_repo(context.repo).get_contents(path, ref=ref)
-        if isinstance(contents, list):
-            # A directory. Nothing in a changed-files list should resolve to one,
-            # so this is a bug or a path collision rather than a normal outcome.
-            msg = f"{path} is a directory at {ref[:8]}, not a file"
-            raise GitHubUnavailable(msg)
-        return contents.decoded_content.decode("utf-8", errors="replace")
+    return read_file_at_ref(context, path, ref=ref, client=client)
 
 
 def fetch_diff(
@@ -277,7 +290,7 @@ def upsert_report_comment(
                         "pr_number": context.pr_number,
                     },
                 )
-                return comment.id  # type: ignore[return-value]
+                return comment.id
 
         created = pull.create_issue_comment(body)
         logger.info(
@@ -291,7 +304,7 @@ def upsert_report_comment(
                 "pr_number": context.pr_number,
             },
         )
-        return created.id  # type: ignore[return-value]
+        return created.id
 
 
 class _guard:

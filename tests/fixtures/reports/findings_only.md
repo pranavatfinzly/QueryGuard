@@ -4,6 +4,8 @@
 
 Reviewed 2 queries and found 2 problems.
 
+*Static analysis only: every finding below comes from the query's source text, not a measured execution plan — nothing in this change was run against a database.*
+
 ### 🔴 Critical
 
 #### `UPDATE` rewrites every row: no `WHERE` clause

@@ -16,10 +16,26 @@ from queryguard.pipeline.extract.java import extract_java
 @pytest.mark.parametrize(
     ("annotation", "kind", "expected"),
     [
-        ('@Query("SELECT u FROM User u WHERE u.email = :email")', QueryKind.JPQL, "SELECT u FROM User u WHERE u.email = :email"),
-        ('@Query(value = "SELECT * FROM users WHERE email = ?1", nativeQuery = true)', QueryKind.SQL, "SELECT * FROM users WHERE email = ?1"),
-        ('@Query(nativeQuery = false, value = "SELECT u FROM User u")', QueryKind.JPQL, "SELECT u FROM User u"),
-        ('@Query("SELECT u FROM User u WHERE u.name = \\"a,b\\"")', QueryKind.JPQL, 'SELECT u FROM User u WHERE u.name = "a,b"'),
+        (
+            '@Query("SELECT u FROM User u WHERE u.email = :email")',
+            QueryKind.JPQL,
+            "SELECT u FROM User u WHERE u.email = :email",
+        ),
+        (
+            '@Query(value = "SELECT * FROM users WHERE email = ?1", nativeQuery = true)',
+            QueryKind.SQL,
+            "SELECT * FROM users WHERE email = ?1",
+        ),
+        (
+            '@Query(nativeQuery = false, value = "SELECT u FROM User u")',
+            QueryKind.JPQL,
+            "SELECT u FROM User u",
+        ),
+        (
+            '@Query("SELECT u FROM User u WHERE u.name = \\"a,b\\"")',
+            QueryKind.JPQL,
+            'SELECT u FROM User u WHERE u.name = "a,b"',
+        ),
     ],
 )
 def test_annotation_forms(annotation: str, kind: QueryKind, expected: str) -> None:
@@ -45,14 +61,14 @@ User findOne();
 
 
 def test_annotations_and_derived_queries_are_all_extracted_in_order() -> None:
-    content = '''public interface UserRepository {
+    content = """public interface UserRepository {
     @Query("SELECT u FROM User u")
     User one();
     User findByEmailOrUsername(String email, String username);
     @Query(value = "SELECT * FROM users", nativeQuery = true)
     User nativeOne();
     User findTop10ByStatusOrderByCreatedAtDesc(String status);
-}'''
+}"""
 
     queries = extract_java("UserRepository.java", content)
 
@@ -133,8 +149,8 @@ def test_after_keeps_a_temporal_comparison_through_the_derived_ir() -> None:
     "content",
     [
         '// @Query("SELECT fake")\ninterface RRepository { void ordinary(); }',
-        'interface RRepository { String s = "@Query(\\\"fake\\\")"; void ordinary(); }',
-        'interface RRepository { User someMethodNamedfindByEmail(); void x() { unrelated.findBySomething(); } }',
+        'interface RRepository { String s = "@Query(\\"fake\\")"; void ordinary(); }',
+        "interface RRepository { User someMethodNamedfindByEmail(); void x() { unrelated.findBySomething(); } }",
     ],
 )
 def test_java_lookalikes_are_not_queries(content: str) -> None:

@@ -287,6 +287,21 @@ def test_an_empty_report_is_a_clean_bill_of_health_not_an_empty_body() -> None:
     assert "No queries were found" in rendered
 
 
+def test_an_empty_report_that_is_also_degraded_does_not_read_as_clean() -> None:
+    # A change with nothing to review and a pull request that could not be
+    # fetched at all are both "zero queries" — but they are not the same
+    # outcome, and a reviewer must not be able to mistake the second for the
+    # first from the headline alone (an ingestion failure must not render as
+    # "no problems found").
+    report = empty_report().model_copy(update={"degraded_stages": ["ingest:GitHub returned 404"]})
+
+    rendered = render_markdown(report)
+
+    assert "QueryGuard could not analyze this pull request" in rendered
+    assert "No queries were found" not in rendered
+    assert "No problems" not in rendered
+
+
 def test_a_clean_report_says_how_much_it_reviewed() -> None:
     # Silence has to mean "analyzed and clean", not "never looked".
     report = Report(context=context(), queries=[select_star_query(), unqualified_update()])
@@ -476,6 +491,95 @@ def test_a_finding_whose_query_is_absent_still_renders() -> None:
 
     assert "```sql" not in rendered
     assert "**Where:** `a.sql:1`" in rendered
+
+
+def test_a_derived_method_finding_is_not_quoted_as_literal_sql() -> None:
+    # `findByCustomerId` on a `@ManyToOne` compiles to a JOIN Spring Data issues,
+    # not the bare `SELECT * FROM order WHERE customer_id = ?` this renders — see
+    # CLAUDE.md's caution. A reviewer must not be able to read the fenced block
+    # below as the query that actually ran.
+    derived = ExtractedQuery(
+        id="OrderRepository.java:findByCustomerId",
+        kind=QueryKind.SPRING_DATA_DERIVED,
+        text="SELECT *\nFROM order\nWHERE customer_id = ?",
+        provenance=Provenance(file="OrderRepository.java", line=19, symbol="findByCustomerId"),
+    )
+    report = Report(
+        context=context(),
+        queries=[derived],
+        findings=[
+            Finding(
+                rule_id="select-star",
+                severity=Severity.MEDIUM,
+                title="Query selects every column with `SELECT *`",
+                explanation="e",
+                impact="i",
+                provenance=derived.provenance,
+                query_id=derived.id,
+            )
+        ],
+    )
+
+    rendered = render_markdown(report)
+
+    assert "Inferred query shape" in rendered
+    assert "not the literal SQL Spring Data will issue" in rendered
+    # The disclaimer precedes the fenced text it qualifies, not the other way round.
+    assert rendered.index("Inferred query shape") < rendered.index("```sql")
+
+
+def test_a_raw_sql_finding_carries_no_inferred_disclaimer() -> None:
+    rendered = render_markdown(findings_only_report())
+
+    assert "Inferred query shape" not in rendered
+
+
+def test_a_capped_report_says_how_many_findings_it_left_out() -> None:
+    # A report that only names the findings it shows would read as complete. The
+    # count it found and the count it is showing must both be visible.
+    report = findings_only_report().model_copy(update={"omitted_findings": 5})
+
+    rendered = render_markdown(report)
+
+    assert "Reviewed 2 queries and found 7 problems." in rendered
+    assert "Showing the 2 highest-priority; 5 lower-priority findings are omitted." in rendered
+
+
+def test_a_capped_report_with_one_omitted_finding_uses_the_singular() -> None:
+    report = findings_only_report().model_copy(update={"omitted_findings": 1})
+
+    rendered = render_markdown(report)
+
+    assert "1 lower-priority finding is omitted." in rendered
+
+
+def test_an_uncapped_report_carries_no_omission_note() -> None:
+    rendered = render_markdown(findings_only_report())
+
+    assert "omitted" not in rendered
+
+
+def test_a_report_with_findings_states_it_is_static_analysis_only() -> None:
+    # A reviewer who reads "found no problems" or a list of findings without this
+    # could take either as a claim about measured behaviour, which static analysis
+    # cannot make.
+    rendered = render_markdown(findings_only_report())
+
+    assert "Static analysis only" in rendered
+    assert "measured execution plan" in rendered
+
+
+def test_an_empty_report_carries_no_analysis_basis_note() -> None:
+    # Nothing was reviewed, so there is nothing to say the review method of.
+    rendered = render_markdown(empty_report())
+
+    assert "Static analysis only" not in rendered
+
+
+def test_a_report_where_nothing_could_be_parsed_carries_no_analysis_basis_note() -> None:
+    rendered = render_markdown(degraded_only_report())
+
+    assert "Static analysis only" not in rendered
 
 
 def test_every_rendered_body_ends_with_exactly_one_newline() -> None:

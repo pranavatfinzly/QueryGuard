@@ -102,6 +102,9 @@ _OPERATORS: tuple[tuple[str, DerivedOperator], ...] = (
     ("NotIn", DerivedOperator.NOT_IN),
     ("GreaterThan", DerivedOperator.GREATER_THAN),
     ("LessThan", DerivedOperator.LESS_THAN),
+    # Spring Data's temporal aliases carry the same comparison semantics.
+    ("After", DerivedOperator.GREATER_THAN),
+    ("Before", DerivedOperator.LESS_THAN),
     ("Between", DerivedOperator.BETWEEN),
     ("Equals", DerivedOperator.EQUALS),
     ("IsNot", DerivedOperator.NOT_EQUALS),
@@ -189,6 +192,17 @@ def _parse_predicates(criteria: str) -> list[DerivedPredicate] | None:
 
 
 def _parse_predicate(segment: str, conjunction: str | None) -> DerivedPredicate | None:
+    if segment.endswith("AllIgnoreCase"):
+        # `findByStatusAllIgnoreCase` — Spring Data's method-level "ignore case on
+        # every string property" keyword, appended after the last property, not a
+        # property named "All". Without this, "All" fell through to the property
+        # branch below and rendered a column, `status_all`, that does not exist:
+        # exactly the guessed-rather-than-unsupported query this decoder's own
+        # contract forbids. Rejected outright rather than parsed as "Status" plus
+        # the keyword, since a query-wide case-insensitivity flag is not the same
+        # semantics as this decoder's per-property `ignore_case`.
+        return None
+
     ignore_case = segment.endswith("IgnoreCase")
     if ignore_case:
         segment = segment.removesuffix("IgnoreCase")
@@ -204,10 +218,7 @@ def _parse_predicate(segment: str, conjunction: str | None) -> DerivedPredicate 
 
 def render_derived_query(derived: DerivedQuery, table: str) -> str:
     """Render normalized semantics for the generic static rule engine."""
-    predicates = [
-        _render_predicate(predicate)
-        for predicate in derived.predicates
-    ]
+    predicates = [_render_predicate(predicate) for predicate in derived.predicates]
     where = f"WHERE {predicates[0]}" + "".join(
         f"\n{predicate.conjunction} {rendered}"
         for predicate, rendered in zip(derived.predicates[1:], predicates[1:], strict=True)
@@ -269,7 +280,9 @@ def _render_predicate(predicate: DerivedPredicate) -> str:
             return f"{left} IS NOT NULL"
 
 
-def parse_derived_method(method_name: str, entity: str, path: str, line: int | None = None) -> ExtractedQuery | None:
+def parse_derived_method(
+    method_name: str, entity: str, path: str, line: int | None = None
+) -> ExtractedQuery | None:
     derived = parse_derived_query(method_name)
     if derived is None:
         return None

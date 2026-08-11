@@ -13,12 +13,14 @@ import ast
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
 from pydantic import SecretStr, ValidationError
 
 from queryguard.config import (
+    DEFAULT_GROQ_MODEL,
     ENVIRONMENT_VARIABLE,
     TEST_ENVIRONMENT,
     MissingConfiguration,
@@ -34,6 +36,7 @@ PACKAGE = REPOSITORY / "queryguard"
 
 TOKEN = "ghp_supersecrettokenvalue"
 API_KEY = "sk-ant-supersecretapikeyvalue"
+GROQ_KEY = "gsk_supersecretgroqkeyvalue"
 
 
 @pytest.fixture(autouse=True)
@@ -43,7 +46,7 @@ def _clean_settings_cache() -> None:
 
 
 def configured() -> Settings:
-    return Settings.isolated(github_token=TOKEN, anthropic_api_key=API_KEY)
+    return Settings.isolated(github_token=TOKEN, anthropic_api_key=API_KEY, groq_api_key=GROQ_KEY)
 
 
 # --- Masking ------------------------------------------------------------------
@@ -55,6 +58,10 @@ def test_repr_masks_the_github_token() -> None:
 
 def test_repr_masks_the_anthropic_api_key() -> None:
     assert API_KEY not in repr(configured())
+
+
+def test_repr_masks_the_groq_api_key() -> None:
+    assert GROQ_KEY not in repr(configured())
 
 
 def test_str_masks_secrets_too() -> None:
@@ -106,6 +113,7 @@ def test_json_serialization_does_not_leak_a_secret() -> None:
 
     assert TOKEN not in dumped
     assert API_KEY not in dumped
+    assert GROQ_KEY not in dumped
 
 
 def test_dict_dump_does_not_leak_a_secret_when_rendered() -> None:
@@ -119,6 +127,7 @@ def test_the_value_is_reachable_only_by_asking_for_it_explicitly() -> None:
     # Masking must not cost access — it makes leaking deliberate, not impossible.
     assert configured().github_token.get_secret_value() == TOKEN  # type: ignore[union-attr]
     assert configured().require_github_token() == TOKEN
+    assert configured().require_groq_api_key() == GROQ_KEY
     assert configured().require_anthropic_api_key() == API_KEY
 
 
@@ -159,6 +168,37 @@ def test_anthropic_api_key_is_optional_for_now() -> None:
 def test_requiring_the_optional_key_fails_clearly_at_the_point_of_use() -> None:
     with pytest.raises(MissingConfiguration, match="ANTHROPIC_API_KEY"):
         Settings.isolated(github_token=TOKEN).require_anthropic_api_key()
+
+
+def test_groq_api_key_is_optional() -> None:
+    # The N+1 explanation stage is the only thing that needs it, and a run that
+    # never reaches that stage — or whose provider is never configured — must not
+    # be blocked on a key it will not use.
+    settings = Settings.isolated(github_token=TOKEN)
+
+    assert validate_required(settings) is settings
+    assert settings.groq_api_key is None
+
+
+def test_requiring_the_optional_groq_key_fails_clearly_at_the_point_of_use() -> None:
+    with pytest.raises(MissingConfiguration, match="GROQ_API_KEY"):
+        Settings.isolated(github_token=TOKEN).require_groq_api_key()
+
+
+def test_groq_model_defaults_to_the_documented_model() -> None:
+    assert Settings.isolated().groq_model == DEFAULT_GROQ_MODEL
+
+
+def test_groq_model_is_configurable() -> None:
+    assert Settings.isolated(groq_model="mixtral-8x7b-32768").groq_model == "mixtral-8x7b-32768"
+
+
+@pytest.mark.parametrize("blank", ["", "   ", "\t"])
+def test_a_blank_groq_model_falls_back_to_the_default(blank: str) -> None:
+    # GitHub Actions renders an undefined `vars.GROQ_MODEL` as an empty string,
+    # not as an absent variable — this is what keeps that from silently pointing
+    # every Groq call at a model nothing serves.
+    assert Settings.isolated(groq_model=blank).groq_model == DEFAULT_GROQ_MODEL
 
 
 def test_missing_required_lists_exactly_what_is_absent() -> None:
@@ -298,18 +338,28 @@ def _import_config(env: dict[str, str]) -> subprocess.CompletedProcess[str]:
     Python without SYSTEMROOT cannot initialize its socket providers and dies
     before reaching any QueryGuard code, which would make these tests pass for
     entirely the wrong reason.
+
+    Run from an empty directory, not the repository root: ``Settings`` reads a
+    ``.env`` file at the process's working directory by design (see its
+    docstring), and a developer's own ``.env`` sitting in the repository for
+    local runs would otherwise leak into this subprocess and answer the
+    question this test is asking. ``PYTHONPATH`` is set explicitly because
+    moving the cwd away from the repository also removes it from the default
+    import path that ``python -c`` would otherwise search.
     """
     environment = {key: value for key, value in os.environ.items() if key not in CONFIG_VARIABLES}
     environment.update(env)
+    environment["PYTHONPATH"] = str(REPOSITORY)
 
-    return subprocess.run(
-        [sys.executable, "-c", "import queryguard.config"],
-        cwd=REPOSITORY,
-        env=environment,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    with tempfile.TemporaryDirectory() as isolated_cwd:
+        return subprocess.run(
+            [sys.executable, "-c", "import queryguard.config"],
+            cwd=isolated_cwd,
+            env=environment,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
 
 
 def test_importing_without_a_token_fails_with_a_clear_error() -> None:

@@ -12,11 +12,16 @@ Wired today, in run order:
 1. **Extract** — :func:`queryguard.pipeline.extract.extract_source` per source.
 2. **Static analysis** — :class:`~queryguard.pipeline.static_rules.RuleEngine` over
    everything extract produced.
+3. **Rank + cap** — :func:`~queryguard.pipeline.report.rank_findings` deduplicates
+   and orders the merged findings; :func:`~queryguard.pipeline.report.cap_findings`
+   bounds how many reach the comment. Stage 8 in CLAUDE.md's numbering, done here
+   rather than only in the renderer because a capped-but-unlabelled report would
+   otherwise report a false total in ``AnalyzeResponse`` as well as in Markdown.
 
-Stages 4–8 (provision, EXPLAIN, HypoPG, N+1, Markdown rendering) are not wired
-because they are not implemented. The runner does not pretend otherwise: it
-returns the :class:`~queryguard.models.report.Report` those stages would have
-enriched, carrying only what the static path could establish.
+Stages 4–7 (provision, EXPLAIN, HypoPG, N+1) are not wired because they are not
+implemented. The runner does not pretend otherwise: it returns the
+:class:`~queryguard.models.report.Report` those stages would have enriched,
+carrying only what the static path could establish.
 
 Fail-soft is the point of the structure (CLAUDE.md invariant 5). A source that
 cannot be extracted loses that source and nothing else; a rule engine that raises
@@ -36,6 +41,7 @@ from queryguard.models.finding import Finding
 from queryguard.models.query import ExtractedQuery, SourceFile
 from queryguard.models.report import Report, RunContext
 from queryguard.pipeline.extract import extract_source
+from queryguard.pipeline.report import DEFAULT_MAX_FINDINGS, cap_findings, rank_findings
 from queryguard.pipeline.static_rules import RuleEngine
 
 if TYPE_CHECKING:
@@ -83,31 +89,43 @@ class AnalysisRunner:
         initial_degraded_stages: Sequence[str] = (),
         post_comment: bool = False,
         client: Github | None = None,
+        max_findings: int = DEFAULT_MAX_FINDINGS,
     ) -> Report:
         """Extract queries from ``sources``, apply the static rules, and report.
 
         ``run_id`` is generated unless supplied; callers pass one when the identifier
-        comes from elsewhere (a webhook delivery ID, a test fixture).
+        comes from elsewhere (a webhook delivery ID, a test fixture). ``max_findings``
+        bounds the comment's length; findings beyond it are still found and ranked,
+        just not shown — see :func:`~queryguard.pipeline.report.cap_findings`.
         """
         started = time.perf_counter()
-        context = context if context is not None else RunContext(
-            run_id=run_id if run_id is not None else str(uuid.uuid4()),
-            repo=repo,
-            pr_number=pr_number,
+        context = (
+            context
+            if context is not None
+            else RunContext(
+                run_id=run_id if run_id is not None else str(uuid.uuid4()),
+                repo=repo,
+                pr_number=pr_number,
+            )
         )
 
         queries, extract_degraded = self._extract(context, sources)
         findings, static_degraded = self._apply_static_rules(context, queries)
         degraded_stages = [*initial_degraded_stages, *extract_degraded, *static_degraded]
 
+        findings = rank_findings(findings)
+        findings, omitted_findings = cap_findings(findings, max_findings=max_findings)
+
         comment_id = None
         if post_comment:
             from queryguard.integrations.github import GitHubUnavailable, upsert_report_comment
+
             temp_report = Report(
                 context=context,
                 queries=queries,
                 findings=findings,
                 degraded_stages=degraded_stages,
+                omitted_findings=omitted_findings,
             )
             try:
                 comment_id = upsert_report_comment(context, temp_report, client=client)
@@ -120,10 +138,11 @@ class AnalysisRunner:
         # whoever is tailing them. Neither should have to reconstruct the other.
         logger.info(
             "analysis complete: run_id=%s number_of_queries=%d number_of_findings=%d "
-            "processing_time_ms=%.3f degraded=%d",
+            "number_of_findings_omitted=%d processing_time_ms=%.3f degraded=%d",
             context.run_id,
             len(queries),
             len(findings),
+            omitted_findings,
             elapsed_ms,
             len(degraded_stages),
             extra={
@@ -132,6 +151,7 @@ class AnalysisRunner:
                 "pr_number": context.pr_number,
                 "number_of_queries": len(queries),
                 "number_of_findings": len(findings),
+                "number_of_findings_omitted": omitted_findings,
                 "processing_time_ms": elapsed_ms,
                 "degraded_stages": degraded_stages,
             },
@@ -143,6 +163,7 @@ class AnalysisRunner:
             findings=findings,
             degraded_stages=degraded_stages,
             comment_id=comment_id,
+            omitted_findings=omitted_findings,
         )
 
     def _extract(

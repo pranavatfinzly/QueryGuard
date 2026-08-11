@@ -13,11 +13,10 @@ implemented.
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import TYPE_CHECKING
-
-from queryguard.pipeline.runner import AnalysisRunner
 
 from github import Github
+
+from queryguard.pipeline.runner import AnalysisRunner
 
 __all__ = ["get_analysis_runner", "get_github_client"]
 

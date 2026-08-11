@@ -14,13 +14,25 @@ import sqlglot
 from sqlglot import exp
 
 from queryguard.models.finding import Finding, Severity
-from queryguard.models.query import ExtractedQuery
+from queryguard.models.query import ExtractedQuery, QueryKind
 from queryguard.pipeline.static_rules.base import RULES, Rule, RuleContext
 from queryguard.pipeline.static_rules.schema import UNKNOWN_SCHEMA, SchemaProvider
 
 __all__ = ["RuleEngine", "silence_sqlglot_fallback_warnings"]
 
 logger = logging.getLogger(__name__)
+
+#: Applied to every finding raised against a Spring Data derived-method query.
+#: That query's text is not SQL the application will run — it is
+#: :func:`~queryguard.pipeline.extract.derived.render_derived_query`'s rendering of
+#: what the method name declares, over a guessed table name, with no knowledge of
+#: entity mappings. A `@ManyToOne` association compiles to a JOIN Spring Data
+#: issues and this renderer cannot see (CLAUDE.md's caution about `findByCustomerId`).
+#: The rule that fired is still evaluating a real shape — the predicate, the
+#: projection, the operation — so the finding is not discarded; it is labelled
+#: unverified, the same treatment CLAUDE.md prescribes for an unverifiable Claude
+#: claim, so a reviewer does not read it as a claim about executed SQL.
+_INFERRED_CONFIDENCE = 0.5
 
 #: sqlglot logs a WARNING for every statement it cannot fully model and parses as a
 #: `Command` instead — `SHOW search_path`, `SET ROLE ...`. That is expected input,
@@ -82,10 +94,19 @@ class RuleEngine:
 
             context = RuleContext(query=query, ast=ast, schema=self._schema)
             for rule in self.rules:
-                findings.extend(self._run_one(rule, context))
+                raised = self._run_one(rule, context)
+                if query.kind is QueryKind.SPRING_DATA_DERIVED:
+                    raised = [self._mark_inferred(finding) for finding in raised]
+                findings.extend(raised)
 
         findings.sort(key=lambda finding: _SEVERITY_ORDER[finding.severity])
         return findings
+
+    def _mark_inferred(self, finding: Finding) -> Finding:
+        """Label a finding as unverified, unless a rule already set its own confidence."""
+        if finding.confidence is not None:
+            return finding
+        return finding.model_copy(update={"confidence": _INFERRED_CONFIDENCE})
 
     def _parse(self, query: ExtractedQuery) -> exp.Expression | None:
         """Parse one query, or return None having logged why it could not be."""

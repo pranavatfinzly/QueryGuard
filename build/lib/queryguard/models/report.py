@@ -33,3 +33,11 @@ class Report(Contract):
         default=None,
         description="The ID of the comment posted to the pull request, if any.",
     )
+    omitted_findings: int = Field(
+        default=0,
+        ge=0,
+        description="Lower-priority findings dropped by the report cap. They were "
+        "still found and ranked — only the comment's length was bounded — so this "
+        "is surfaced rather than left for the count in `findings` to misstate as "
+        "the total.",
+    )
