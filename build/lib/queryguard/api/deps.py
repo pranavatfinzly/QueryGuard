@@ -16,7 +16,10 @@ from functools import lru_cache
 
 from github import Github
 
+from queryguard.config import get_settings
+from queryguard.db.liquibase import load_schema_from_settings
 from queryguard.pipeline.runner import AnalysisRunner
+from queryguard.pipeline.static_rules import RuleEngine
 
 __all__ = ["get_analysis_runner", "get_github_client"]
 
@@ -26,10 +29,13 @@ def get_analysis_runner() -> AnalysisRunner:
     """The process-wide analysis runner.
 
     Cached rather than built per request: the runner holds no per-run state, and
-    constructing one builds a rule engine and installs sqlglot's log filter, neither
-    of which should repeat on every request.
+    constructing one builds a rule engine, loads and parses the configured
+    Liquibase schema (if any), and installs sqlglot's log filter — none of which
+    should repeat on every request. A run with no ``LIQUIBASE_CHANGELOG_PATH``
+    configured gets the same silent schema-dependent rules QueryGuard always had.
     """
-    return AnalysisRunner()
+    schema = load_schema_from_settings(get_settings().liquibase_changelog_path)
+    return AnalysisRunner(engine=RuleEngine(schema=schema))
 
 
 def get_github_client() -> Github | None:

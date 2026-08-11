@@ -19,10 +19,13 @@ from pathlib import Path
 import pytest
 from pydantic import SecretStr, ValidationError
 
+from queryguard.models import Severity
 from queryguard.config import (
     DEFAULT_GROQ_MODEL,
+    ENFORCEMENT_ENVIRONMENT_FIELDS,
     ENVIRONMENT_VARIABLE,
     TEST_ENVIRONMENT,
+    InvalidEnforcementPolicy,
     MissingConfiguration,
     Settings,
     get_settings,
@@ -273,6 +276,26 @@ def test_settings_can_be_built_from_an_explicit_environment_mapping() -> None:
     assert settings.require_anthropic_api_key() == API_KEY
 
 
+def test_settings_can_read_prefixed_enforcement_environment_names() -> None:
+    settings = Settings.from_mapping(
+        {
+            "QUERYGUARD_BLOCK_SEVERITIES": "MEDIUM",
+            "QUERYGUARD_WARN_RULES": "no-limit",
+        }
+    )
+    policy = settings.enforcement_policy()
+
+    assert policy.blocking_severities == {Severity.MEDIUM}
+    assert policy.warning_rule_ids == {"no-limit"}
+
+
+def test_invalid_enforcement_configuration_names_the_setting() -> None:
+    settings = Settings.isolated(block_severities="HIGH,SEVERE")
+
+    with pytest.raises(InvalidEnforcementPolicy, match="QUERYGUARD_BLOCK_SEVERITIES"):
+        settings.enforcement_policy()
+
+
 def test_an_unrecognized_variable_is_ignored_rather_than_rejected() -> None:
     # This process does not own the environment it runs in.
     assert Settings.from_mapping({"PATH": "/usr/bin", "GITHUB_TOKEN": TOKEN}) is not None
@@ -328,7 +351,15 @@ def test_settings_are_immutable() -> None:
 
 #: Variables this module reads. Cleared before each subprocess so the developer's
 #: own shell cannot decide whether a test passes.
-CONFIG_VARIABLES = ("GITHUB_TOKEN", "ANTHROPIC_API_KEY", ENVIRONMENT_VARIABLE)
+CONFIG_VARIABLES = (
+    "GITHUB_TOKEN",
+    "ANTHROPIC_API_KEY",
+    "GROQ_API_KEY",
+    "GROQ_MODEL",
+    "LIQUIBASE_CHANGELOG_PATH",
+    ENVIRONMENT_VARIABLE,
+    *ENFORCEMENT_ENVIRONMENT_FIELDS,
+)
 
 
 def _import_config(env: dict[str, str]) -> subprocess.CompletedProcess[str]:

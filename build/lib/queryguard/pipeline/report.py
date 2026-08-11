@@ -159,7 +159,16 @@ def _summary(report: Report, unanalyzable: Sequence[ExtractedQuery]) -> str:
     analyzed = len(report.queries) - len(unanalyzable)
 
     if not report.queries:
-        found = "No queries were found in this change."
+        # Two different reasons a report can have no queries in it, and they must
+        # not read the same: a change with nothing to review is a clean result, a
+        # PR that could not even be fetched is not — see it degraded below, and a
+        # reviewer must not be able to mistake the second for the first from the
+        # headline alone.
+        found = (
+            "QueryGuard could not analyze this pull request."
+            if report.degraded_stages
+            else "No queries were found in this change."
+        )
     elif analyzed == 0:
         # Queries were found and none could be read. "Found no problems" would be
         # a clean bill of health for a review that never happened.

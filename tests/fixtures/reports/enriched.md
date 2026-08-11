@@ -2,11 +2,17 @@
 
 ## QueryGuard
 
+Status: BLOCKED
+
+🚫 QueryGuard blocked this PR because 2 blocking findings were detected.
+
 Reviewed 2 queries and found 2 problems.
 
 *Static analysis only: every finding below comes from the query's source text, not a measured execution plan — nothing in this change was run against a database.*
 
-### 🟠 High
+### Blocking findings
+
+#### 🟠 High
 
 #### Repository call inside a loop issues one query per row
 
