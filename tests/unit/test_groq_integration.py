@@ -312,7 +312,7 @@ def test_a_400_logs_the_actual_diagnostic_not_just_the_status_code(
     assert result == {}
     (record,) = [r for r in caplog.records if "API returned" in r.getMessage()]
     assert "does not support response format" in record.getMessage()
-    assert record.status_code == 400
+    assert getattr(record, "status_code", None) == 400
 
 
 def test_a_groq_key_shaped_string_in_an_error_message_is_redacted(

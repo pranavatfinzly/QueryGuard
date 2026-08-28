@@ -946,4 +946,3 @@ closes TD-2 and TD-5 and makes invariant 4 real.
 which closes TD-1 by putting the `BEGIN`/`ROLLBACK` guarantee under test, and makes
 the two dormant schema-dependent rules live.
 
-n+ 1, claude integration. 

@@ -341,8 +341,8 @@ def test_a_not_found_classification_logs_at_info_not_error(
     records = [r for r in caplog.records if r.name == github.logger.name]
     assert len(records) == 1
     assert records[0].levelno == logging.INFO
-    assert records[0].classification == "not_found"
-    assert records[0].status == 404
+    assert getattr(records[0], "classification", None) == "not_found"
+    assert getattr(records[0], "status", None) == 404
 
 
 def test_a_permission_denied_classification_still_logs_at_error(
@@ -360,7 +360,7 @@ def test_a_permission_denied_classification_still_logs_at_error(
     records = [r for r in caplog.records if r.name == github.logger.name]
     assert len(records) == 1
     assert records[0].levelno == logging.ERROR
-    assert records[0].classification == "permission_denied"
+    assert getattr(records[0], "classification", None) == "permission_denied"
 
 
 def test_rate_limit_is_classified_as_transient_not_permission_denied(
@@ -405,8 +405,8 @@ def test_read_file_at_ref_logs_the_path_and_ref_on_failure(
         )
 
     record = next(r for r in caplog.records if r.name == github.logger.name)
-    assert record.path == "missing.java"
-    assert record.ref == recorded_pr.head_sha
+    assert getattr(record, "path", None) == "missing.java"
+    assert getattr(record, "ref", None) == recorded_pr.head_sha
 
 
 def test_a_rate_limit_is_reported_as_the_status_it_is(
