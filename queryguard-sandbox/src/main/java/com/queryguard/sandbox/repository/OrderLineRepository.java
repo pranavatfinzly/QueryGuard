@@ -5,7 +5,7 @@ import java.util.Collection;
 import java.util.List;
 import org.springframework.data.jpa.repository.JpaRepository;
 
-public interface OrderItemRepository extends JpaRepository<OrderItem, Long> {
+public interface OrderLineRepository extends JpaRepository<OrderItem, Long> {
 
     /**
      * Derived query, indexed on order_id. Fine on its own; becomes an N+1 when
@@ -18,4 +18,7 @@ public interface OrderItemRepository extends JpaRepository<OrderItem, Long> {
      * page of orders instead of one per order.
      */
     List<OrderItem> findByOrderIdIn(Collection<Long> orderIds);
+
+    /** Added in the fixture PR, on the renamed path. */
+    List<OrderItem> findBySku(String sku);
 }

@@ -161,3 +161,6 @@ constructor SnakeYAML 2.x removed. Spring Boot 3.x manages SnakeYAML to 2.x, so
 [Datafaker](https://www.datafaker.net/) is the maintained fork with the same API
 if you would rather drop the pin — JavaFaker is used here because it was asked
 for by name.
+
+<!-- Touched by the QueryGuard diff fixture PR: Markdown is a language no
+extractor claims, so ingest must skip this file rather than degrade it. -->
