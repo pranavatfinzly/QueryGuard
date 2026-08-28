@@ -14,7 +14,6 @@ Create `.github/workflows/queryguard.yml` in the consumer repository:
 
 ```yaml
 name: QueryGuard
-
 on:
   pull_request:
     types: [opened, synchronize]
@@ -58,6 +57,46 @@ Action.
 No fork of QueryGuard, no copy of its source, no per-repo Python environment
 to maintain — every consumer always runs whatever `queryguard-ref` resolves
 to (a tag once one exists, `main` today).
+
+## Making a blocking finding actually block the merge
+
+Adding the workflow above is not, by itself, enough to stop a bad pull
+request from merging. QueryGuard submits a `REQUEST_CHANGES` review when a
+finding meets the blocking threshold (`CRITICAL`/`HIGH` by default) and exits
+its CI job with a non-zero status — but it never touches branch protection,
+never merges, and never closes anything (CLAUDE.md's own invariant). Whether
+either of those signals actually stops the merge button is entirely a
+property of the consuming repository's branch protection settings, not
+something QueryGuard controls. On a repo with no branch protection at all, a
+`REQUEST_CHANGES` review is advisory: anyone with write access can merge past
+it.
+
+To make it a real gate, configure branch protection on the target branch
+(**Settings → Branches → Branch protection rules**) with one or both of
+these — most repositories want both:
+
+1. **Require approvals.** Under "Require a pull request before merging",
+   enable "Require approvals" (1 is enough). With this on, an outstanding
+   `REQUEST_CHANGES` review — QueryGuard's or a human's — genuinely disables
+   the merge button until it is resolved: either QueryGuard clears it on a
+   later run (pushing a fix and re-triggering `synchronize` makes it re-post
+   its own review, moving to `COMMENT` if nothing blocking remains), or
+   someone with permission dismisses the review manually. Caveat: a repo
+   admin can still bypass this unless "Do not allow bypassing the above
+   settings" is also checked, and dismissing QueryGuard's review is always
+   possible for anyone with that permission — this lever is a policy nudge,
+   not a hard wall.
+2. **Require status checks to pass.** Under "Require status checks to pass
+   before merging", mark the QueryGuard job (`review`, from the workflow
+   above) as required. `queryguard review` exits `2` when the run is
+   `BLOCKED`, `1` when QueryGuard itself could not reliably analyze the pull
+   request, `3` on misconfiguration, and `0` for `PASS`/`DEGRADED` — so a
+   blocking finding fails the CI check itself, independent of the review
+   mechanism above. This is the harder-to-accidentally-bypass gate, and the
+   one most teams should treat as the actual enforcement point.
+
+Without at least one of these configured, QueryGuard is purely advisory:
+useful information on the pull request, but nothing stops a merge.
 
 ## The one thing that differs: public repos and fork pull requests
 
