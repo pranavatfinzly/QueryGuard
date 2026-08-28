@@ -1,5 +1,9 @@
 name: QueryGuard
 
+# QueryGuard reviewing its own pull requests (dogfooding), calling the
+# reusable workflow this repository publishes for every other consumer — see
+# queryguard-review.yml and docs/adopting-queryguard.md.
+
 on:
   pull_request:
     types:
@@ -10,64 +14,19 @@ concurrency:
   group: queryguard-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
-permissions:
-  contents: read
-  pull-requests: write
-
 jobs:
   review:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-      - name: Install QueryGuard
-        run: python -m pip install .
-      - name: Smoke test
-        # Catches a packaging regression (a module missing from
-        # pyproject.toml's install dependencies, an import-time error) before
-        # it reaches a real pull request rather than surfacing as a mid-run
-        # ModuleNotFoundError.
-        run: queryguard --help
-      - name: Review pull request
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Optional explicit override. QueryGuard automatically discovers a
-          # standard Spring Boot repository's root Liquibase changelog from its
-          # own db.liquibase.change-log declaration in application.properties/
-          # .yml — this variable is not required for that to work. Set it only
-          # to force a specific path (e.g. for a non-standard layout, or a
-          # repository with more than one application.properties declaring
-          # different changelogs) as a repository (or organization) Actions
-          # variable per consumer. See docs/liquibase-schema-discovery.md.
-          LIQUIBASE_CHANGELOG_PATH: ${{ vars.LIQUIBASE_CHANGELOG_PATH }}
-          # Optional. When set, N+1 findings are enriched with Groq-authored prose
-          # (see CLAUDE.md's Claude/LLM integration notes); unset means the review
-          # is exactly as deterministic as it was before this secret existed — no
-          # code path here changes based on whether it is configured. Never put
-          # the key in this file; set it as a repository (or organization) secret
-          # per consumer, the same way GITHUB_TOKEN is.
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-          # Optional. Overrides the default Groq model; unset uses QueryGuard's
-          # own default — which must support Groq's structured-output "strict"
-          # mode, or every N+1 explanation call will 400 (see
-          # queryguard/config.py::DEFAULT_GROQ_MODEL's docstring).
-          GROQ_MODEL: ${{ vars.GROQ_MODEL }}
-          # Optional. Comma-separated severities/rule IDs that gate the review's
-          # REQUEST_CHANGES/COMMENT decision; unset defaults to CRITICAL,HIGH
-          # blocking. See queryguard/policy.py.
-          QUERYGUARD_BLOCK_SEVERITIES: ${{ vars.QUERYGUARD_BLOCK_SEVERITIES }}
-        # --post-comment posts QueryGuard's Pull Request Review (REQUEST_CHANGES
-        # when a blocking finding exists, COMMENT otherwise — never APPROVE).
-        # The flag name predates the review becoming a real GitHub review
-        # rather than an issue comment; see queryguard/cli.py::review's
-        # docstring for why it was kept rather than renamed. A non-zero exit
-        # here (2 = blocking findings, 1 = QueryGuard could not reliably
-        # analyze this pull request, 3 = misconfiguration) fails this check,
-        # which is the point — see queryguard/cli.py's exit-code constants.
-        run: >-
-          queryguard review
-          --repo ${{ github.repository }}
-          --pr ${{ github.event.pull_request.number }}
-          --post-comment
+    uses: ./.github/workflows/queryguard-review.yml
+    permissions:
+      contents: read
+      pull-requests: write
+    with:
+      # Dogfooding always installs from the exact commit under review, not
+      # `main` — otherwise a change to the reviewer's own logic would not be
+      # exercised until after it merged.
+      queryguard-ref: ${{ github.event.pull_request.head.sha }}
+      liquibase-changelog-path: ${{ vars.LIQUIBASE_CHANGELOG_PATH }}
+      groq-model: ${{ vars.GROQ_MODEL }}
+      block-severities: ${{ vars.QUERYGUARD_BLOCK_SEVERITIES }}
+    secrets:
+      groq-api-key: ${{ secrets.GROQ_API_KEY }}
