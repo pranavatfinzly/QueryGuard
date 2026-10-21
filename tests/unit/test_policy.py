@@ -250,3 +250,41 @@ def test_enforcement_sees_findings_omitted_from_a_capped_report() -> None:
 
     assert result.status is EnforcementStatus.BLOCKED
     assert result.blocking_findings[0].rule_id == "the-one-that-matters"
+
+
+# --- advisory mode ----------------------------------------------------------------
+
+
+def test_advisory_blocks_nothing_even_for_a_critical_finding() -> None:
+    policy = EnforcementPolicy(advisory=True)
+
+    assert not policy.should_block(finding(Severity.CRITICAL))
+    assert evaluate(finding(Severity.CRITICAL), policy=policy) is EnforcementStatus.PASS
+
+
+def test_advisory_outranks_an_explicit_blocking_rule() -> None:
+    policy = EnforcementPolicy(advisory=True, blocking_rule_ids=frozenset({"rule-x"}))
+
+    assert not policy.should_block(finding(Severity.HIGH, rule_id="rule-x"))
+
+
+def test_the_default_policy_is_not_advisory() -> None:
+    assert EnforcementPolicy().should_block(finding(Severity.HIGH))
+
+
+def test_settings_build_an_advisory_policy_from_the_env_var() -> None:
+    assert Settings(QUERYGUARD_ADVISORY="true").enforcement_policy().advisory is True  # type: ignore[call-arg]
+
+
+@pytest.mark.parametrize("raw", ["", "  ", "false", "0"])
+def test_a_blank_or_false_advisory_setting_is_off(raw: str) -> None:
+    # An unset workflow variable renders as the empty string, not as false.
+    assert Settings(QUERYGUARD_ADVISORY=raw).enforcement_policy().advisory is False  # type: ignore[call-arg]
+
+
+def test_a_blank_block_severities_is_not_advisory() -> None:
+    # Documented trap: blank falls back to the blocking default; it is not "off".
+    policy = Settings(QUERYGUARD_BLOCK_SEVERITIES="").enforcement_policy()  # type: ignore[call-arg]
+
+    assert not policy.advisory
+    assert policy.should_block(finding(Severity.HIGH))
