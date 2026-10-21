@@ -7,11 +7,29 @@ name = "queryguard"
 version = "0.1.0"
 description = "Static pull-request review for database query performance"
 requires-python = ">=3.11"
+# Bounded, not exact: every consumer repo installs QueryGuard fresh in CI, so an
+# unbounded dependency lets an upstream release change org-wide behaviour overnight
+# (sqlglot in particular changes AST details between majors, which the rules read).
+# Bounds are the versions the test suite was last green against; raise them
+# deliberately, with a test run, rather than by accident.
 dependencies = [
-    "pygithub",
-    "pydantic-settings",
-    "sqlglot",
-    "groq",
+    "pygithub>=2.9,<3",
+    "pydantic>=2.13,<3",
+    "pydantic-settings>=2.14,<3",
+    "sqlglot>=30.15,<31",
+    "groq>=1.0,<2",
+    "pyyaml>=6,<7",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=9,<10",
+    "ruff>=0.16,<1",
+    "mypy>=2.3,<3",
+    "types-PyYAML",
+    "fastapi>=0.141,<1",
+    "httpx>=0.28,<1",
+    "anthropic>=0.120,<1",
 ]
 
 [project.scripts]
