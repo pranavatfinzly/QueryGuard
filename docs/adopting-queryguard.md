@@ -189,6 +189,66 @@ neither, so that risk doesn't apply here. Restricting `on:` this way is
 still worth doing deliberately, not by default — treat it as a per-repository
 decision, not something to blanket-apply.
 
+## Rolling it out across an organization
+
+Moving from "one repo that works" to "every repo" is mostly about where QueryGuard
+lives and how the call is pinned. In order:
+
+1. **Host QueryGuard in the organization**, not a personal account, and give its
+   repository **internal** (or private) visibility. A repository that every
+   consumer installs from is shared infrastructure and needs an owning team.
+2. **Let other repositories call it.** For a private or internal repo, open
+   *Settings → Actions → General → Access* on the QueryGuard repository and allow
+   access from repositories in the organization. Without this, a consumer's run
+   fails at "workflow not found".
+3. **Point the workflow at the org copy.** Consumers call
+   `ORG/QueryGuard/.github/workflows/queryguard-review.yml@<tag>` and pass
+   `queryguard-repo: ORG/QueryGuard`. If that repo is private or internal, also pass
+   the optional `queryguard-token` secret (a read-only token for that one repo),
+   because the install step is otherwise anonymous.
+4. **Pin a release tag**, never `@main`. Every consumer installs the ref on every
+   run, so a moving ref is a moving org-wide gate. Cut `v0.1.0`, and roll consumers
+   forward by changing the tag.
+5. **Decide the LLM question centrally.** Pass `disable-llm: true` until an LLM
+   provider has been approved for source code. It wins over a supplied
+   `groq-api-key`: no provider is constructed and nothing but GitHub traffic leaves
+   the runner. The review is then fully deterministic.
+6. **Roll out advisory first.** Set `block-severities: ""` (or have teams commit
+   `block-severities: []` in `.queryguard.yml`) so findings are posted but nothing
+   blocks. Review the false-positive rate on real PRs, then turn blocking on and
+   mark the check required.
+7. **Avoid one PR per repository** where your GitHub plan allows it: an organization
+   ruleset that requires a workflow can enforce a thin caller from a central repo
+   (check availability on your plan). Otherwise a one-time script that opens the
+   same small caller-file PR in each repo does the job.
+
+A minimal org-pinned consumer:
+
+```yaml
+name: QueryGuard
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+concurrency:
+  group: queryguard-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    uses: ORG/QueryGuard/.github/workflows/queryguard-review.yml@v0.1.0
+    permissions:
+      contents: read
+      pull-requests: write
+    with:
+      queryguard-repo: ORG/QueryGuard
+      queryguard-ref: v0.1.0
+      disable-llm: true
+      block-severities: ""        # advisory while piloting
+    secrets:
+      queryguard-token: ${{ secrets.QUERYGUARD_INSTALL_TOKEN }}   # only if QueryGuard is private/internal
+```
+
 ## What this does not (yet) give you
 
 A GitHub App installation model — install once at the organization level,

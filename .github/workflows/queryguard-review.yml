@@ -33,10 +33,28 @@ on:
         required: false
         type: string
       queryguard-ref:
-        description: "QueryGuard git ref to install (branch, tag, or commit SHA)."
+        description: >-
+          QueryGuard git ref to install (branch, tag, or commit SHA). Consumers
+          should pin a release tag or SHA, not main: every consumer installs this
+          ref on every run, so a moving ref is a moving org-wide gate.
         required: false
         type: string
         default: main
+      queryguard-repo:
+        description: >-
+          OWNER/REPO that QueryGuard is installed from. Set this to the
+          organisation's own copy once QueryGuard has moved there.
+        required: false
+        type: string
+        default: pranavatfinzly/QueryGuard
+      disable-llm:
+        description: >-
+          Never call an LLM provider, even if a groq-api-key is supplied. The
+          review is then fully deterministic and no code leaves the runner except
+          to GitHub. Set this org-wide until an LLM provider has been approved.
+        required: false
+        type: boolean
+        default: false
       python-version:
         required: false
         type: string
@@ -44,6 +62,12 @@ on:
     secrets:
       groq-api-key:
         description: "Optional. Enables Groq-authored prose for N+1 findings. Unset means a fully deterministic review."
+        required: false
+      queryguard-token:
+        description: >-
+          Optional. A token with read access to queryguard-repo, needed only when
+          that repository is private or internal. Without it the install is
+          anonymous and fails on a private repo.
         required: false
 
 permissions:
@@ -58,7 +82,20 @@ jobs:
         with:
           python-version: ${{ inputs.python-version }}
       - name: Install QueryGuard
-        run: python -m pip install "git+https://github.com/pranavatfinzly/QueryGuard.git@${{ inputs.queryguard-ref }}"
+        env:
+          QUERYGUARD_REPO: ${{ inputs.queryguard-repo }}
+          QUERYGUARD_REF: ${{ inputs.queryguard-ref }}
+          QUERYGUARD_TOKEN: ${{ secrets.queryguard-token }}
+        # Inputs reach the shell as environment variables, never interpolated into
+        # the script text, so a crafted ref cannot inject commands. The token (when
+        # given) is wired in through git's URL rewriting rather than embedded in the
+        # pip URL, and is removed again afterwards; Actions masks it in logs.
+        run: |
+          if [ -n "$QUERYGUARD_TOKEN" ]; then
+            git config --global url."https://x-access-token:${QUERYGUARD_TOKEN}@github.com/".insteadOf "https://github.com/"
+          fi
+          python -m pip install "git+https://github.com/${QUERYGUARD_REPO}.git@${QUERYGUARD_REF}"
+          git config --global --unset-all url."https://x-access-token:${QUERYGUARD_TOKEN}@github.com/".insteadOf || true
       - name: Smoke test
         # Catches a packaging regression (a module missing from
         # pyproject.toml's install dependencies, an import-time error) before
@@ -80,12 +117,17 @@ jobs:
           GROQ_API_KEY: ${{ secrets.groq-api-key }}
           GROQ_MODEL: ${{ inputs.groq-model }}
           QUERYGUARD_BLOCK_SEVERITIES: ${{ inputs.block-severities }}
+          PR_NUMBER: ${{ inputs.pr-number || github.event.pull_request.number }}
+          # disable-llm wins over a supplied groq-api-key: --no-llm means no provider
+          # is ever constructed, so nothing is sent off the runner but GitHub traffic.
+          NO_LLM_FLAG: ${{ inputs.disable-llm && '--no-llm' || '' }}
         # A non-zero exit here (2 = blocking findings, 1 = QueryGuard could
         # not reliably analyze this pull request, 3 = misconfiguration) fails
         # this check, which is the point — see queryguard/cli.py's exit-code
         # constants.
         run: >-
           queryguard review
-          --repo ${{ github.repository }}
-          --pr ${{ inputs.pr-number || github.event.pull_request.number }}
+          --repo "$GITHUB_REPOSITORY"
+          --pr "$PR_NUMBER"
           --post-comment
+          $NO_LLM_FLAG
