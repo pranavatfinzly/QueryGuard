@@ -518,6 +518,7 @@ def render_candidate(candidate: NPlusOneCandidate) -> Finding:
         evidence=_evidence(candidate),
         suggestions=_suggestions(candidate),
         confidence=candidate.tier.confidence,
+        confidence_basis=_confidence_basis(candidate),
     )
 
 
@@ -611,6 +612,37 @@ def _impact(candidate: NPlusOneCandidate) -> str:
         "with the collection — a set that is small in development and large in "
         "production degrades without the query itself ever looking slow, because no "
         "individual execution is."
+    )
+
+
+def _confidence_basis(candidate: NPlusOneCandidate) -> str | None:
+    """Why this candidate sits in its evidence tier, in terms a reviewer can check.
+
+    A tier is an ordinal, and the same tier will recur on most findings in a pull
+    request; printing its number told a reader nothing about *this* one. The reason
+    does: it names the specific conditions the tier ladder tested.
+    """
+    if candidate.tier.is_runtime_backed:
+        return None  # observed, not inferred: the evidence section carries the proof
+    if candidate.kind is NPlusOneKind.LAZY_ASSOCIATION_IN_LOOP:
+        return (
+            "a lazy association is read once per element, but whether it is actually "
+            "loaded lazily at runtime (fetch plan, open session) was not checked"
+        )
+    if not candidate.repository_resolved:
+        return (
+            f"the type of `{candidate.repository_type}` was inferred from its name; "
+            "its declaration was not seen"
+        )
+    if candidate.dependency is ArgumentDependency.LOOP_ELEMENT_ARGUMENT:
+        element = f"`{candidate.element_identifier}`" if candidate.element_identifier else "it"
+        return (
+            f"the loop variable {element} feeds the call's arguments and the repository "
+            "declaration was resolved, which is the shape of a per-row lookup"
+        )
+    return (
+        "the call repeats inside a loop but its arguments do not depend on the loop "
+        "element, so it may be repeated work that can be hoisted rather than a per-row lookup"
     )
 
 

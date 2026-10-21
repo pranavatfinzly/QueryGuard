@@ -380,3 +380,39 @@ def test_an_edit_inside_the_loop_body_does_not_make_the_pr_own_the_pattern(
 
     assert nplusone_findings(result.findings) == []
     assert result.report.unchanged_findings == 1
+
+
+# --- Evidence strength is explained, not a bare number -----------------------------
+
+
+def test_an_n_plus_one_says_why_it_is_credible_instead_of_printing_a_percentage(
+    service: Build, repository: Build
+) -> None:
+    result = AnalysisRunner().run_review(
+        repo="acme/example", pr_number=1, sources=[service(LOOP), repository(DERIVED)]
+    )
+    (finding,) = nplusone_findings(result.findings)
+
+    assert finding.confidence_basis is not None
+    assert "`parent` feeds the call's arguments" in finding.confidence_basis
+    markdown = render_markdown(result.report)
+    assert "Evidence strength: strong, inferred — the loop variable `parent`" in markdown
+    assert "75%" not in markdown
+
+
+def test_a_call_that_does_not_depend_on_the_loop_is_described_differently(
+    service: Build, repository: Build
+) -> None:
+    independent = """
+        for (Parent parent : parents) {
+            thingRepository.findByParentId(1L);
+        }
+"""
+    result = AnalysisRunner().run_review(
+        repo="acme/example", pr_number=1, sources=[service(independent), repository(DERIVED)]
+    )
+    (finding,) = nplusone_findings(result.findings)
+
+    assert finding.confidence_basis is not None
+    assert "do not depend on the loop element" in finding.confidence_basis
+    assert "Evidence strength: moderate" in render_markdown(result.report)

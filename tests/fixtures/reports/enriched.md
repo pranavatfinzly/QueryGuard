@@ -37,7 +37,7 @@ WHERE customer_id = ?
 SELECT * FROM orders WHERE customer_id IN (:ids);
 ```
 
-*Confidence: 82% — this finding was inferred and could not be verified automatically.*
+*Evidence strength: strong, inferred — the model read the diff and no plan was available to check it. This was not confirmed against a running system or a query plan.*
 
 <sub>`n-plus-one`</sub>
 
