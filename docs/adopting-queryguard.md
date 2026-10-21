@@ -89,6 +89,24 @@ No fork of QueryGuard, no copy of its source, no per-repo Python environment
 to maintain — every consumer always runs whatever `queryguard-ref` resolves
 to (a tag once one exists, `main` today).
 
+## SQL dialect (MySQL, Oracle, SQL Server, Postgres)
+
+SQL is parsed with `sqlglot`, and the dialect decides whether a statement parses at
+all (MySQL backticks are a syntax error to the Postgres parser). QueryGuard works
+the dialect out from the repository itself: the JDBC URL in `application.properties`
+or `application.yml` at the PR head (`jdbc:mysql:` and `jdbc:mariadb:` read as MySQL,
+`jdbc:postgresql:` as Postgres, `jdbc:oracle:` as Oracle, `jdbc:sqlserver:` as SQL
+Server). Nothing is guessed from the SQL text.
+
+- A URL that is a placeholder (`${DB_URL}`), commented out, or an in-memory H2 test
+  database names nothing, and the default (Postgres) is kept.
+- Set `QUERYGUARD_SQL_DIALECT` (a `sqlglot` dialect name such as `mysql`) to
+  override detection. A name `sqlglot` does not know is reported in the review as a
+  degraded `sql_dialect` stage instead of being silently ignored.
+- A file that still cannot be parsed (stored procedures with `DELIMITER`,
+  `<tenant>` placeholders in schema names, `mysqldump` directives) is named in the
+  review as `extract:<path>` and the rest of the run carries on.
+
 ## Verifying it worked, and the most common first-run failure
 
 Open (or push to) a pull request in the consumer repository, then check two

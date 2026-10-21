@@ -150,6 +150,13 @@ class Settings(BaseSettings):
         "every schema-dependent static rule stays silent, exactly as before this "
         "setting existed.",
     )
+    sql_dialect: str | None = Field(
+        default=None,
+        validation_alias="QUERYGUARD_SQL_DIALECT",
+        description="sqlglot dialect SQL is read as (mysql, postgres, oracle, tsql, ...). "
+        "Unset or blank means detect it from the repository's JDBC URL, falling back "
+        "to postgres when that names nothing recognisable.",
+    )
     block_severities: str | None = Field(
         default=None,
         validation_alias="QUERYGUARD_BLOCK_SEVERITIES",
