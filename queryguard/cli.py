@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from queryguard.pipeline.extract.java_structure import ResolveJavaSource
     from queryguard.pipeline.runner import AnalysisRunner
     from queryguard.pipeline.static_rules.schema import SchemaProvider
+    from queryguard.repo_config import RepoConfig
 
 logger = logging.getLogger(__name__)
 
@@ -432,6 +433,35 @@ def _resolve_dialect(context: RunContext, client: Github) -> tuple[str | None, l
     return detect_sql_dialect(read), []
 
 
+def _load_repo_config(context: RunContext, client: Github) -> tuple[RepoConfig, list[str]]:
+    """The repository's ``.queryguard.yml`` at the PR head, plus any degradation.
+
+    Absent (or unreadable) means the defaults, silently: most repositories will
+    never have one. A present-but-invalid file is the opposite case — the author
+    meant something and QueryGuard did not do it — so it is named in the report
+    rather than swallowed.
+    """
+    from queryguard.integrations.github import GitHubUnavailable, read_file_at_ref
+    from queryguard.repo_config import (
+        CONFIG_PATH,
+        InvalidRepoConfig,
+        RepoConfig,
+        parse_repo_config,
+    )
+
+    if context.head_sha is None:
+        return RepoConfig(), []
+    try:
+        text = read_file_at_ref(context, CONFIG_PATH, ref=context.head_sha, client=client)
+    except GitHubUnavailable:
+        return RepoConfig(), []
+    try:
+        return parse_repo_config(text), []
+    except InvalidRepoConfig as error:
+        logger.warning("%s", error, extra={"run_id": context.run_id})
+        return RepoConfig(), [f"repo_config:{error}"]
+
+
 def review(
     repo: str,
     pr_number: int,
@@ -442,6 +472,7 @@ def review(
     runner: AnalysisRunner | None = None,
     llm_provider: LLMExplanationProvider | None = None,
     enforcement_policy: EnforcementPolicy | None = None,
+    org_sets_block_severities: bool = False,
 ) -> ReviewResult:
     """Orchestrate ingest, analysis, rendering, and the Pull Request Review.
 
@@ -473,6 +504,13 @@ def review(
     the caller: silently degrading those would hide a real QueryGuard failure
     behind a green check, which is a worse outcome than a loud one.
 
+    The repository's own ``.queryguard.yml`` (:mod:`queryguard.repo_config`), read at
+    the PR head, layers per-repo choices onto ``enforcement_policy`` and filters
+    ``ignore-paths`` out of the sources. ``org_sets_block_severities`` says the
+    caller's policy came from an explicit organisation setting, which the file
+    must not override. A broken config degrades the run (named in the report) and
+    falls back to the unmodified policy.
+
     ``post_comment`` posts QueryGuard's Pull Request Review
     (:func:`~queryguard.integrations.github.upsert_review`) — CLAUDE.md invariant
     3/4's primary output. The parameter name predates that becoming a real
@@ -484,6 +522,8 @@ def review(
     from queryguard.pipeline.ingest import ingest_pull_request
     from queryguard.pipeline.runner import AnalysisRunner
     from queryguard.pipeline.static_rules import RuleEngine
+    from queryguard.pipeline.static_rules.base import RULES
+    from queryguard.repo_config import CONFIG_PATH, apply_to_policy, filter_ignored_sources
 
     resolved_client = client if client is not None else new_client()
     policy = enforcement_policy if enforcement_policy is not None else EnforcementPolicy()
@@ -501,20 +541,42 @@ def review(
     else:
         context = ingested.context
         dialect_degraded: list[str] = []
+        repo_config, config_degraded = _load_repo_config(context, resolved_client)
+        policy = apply_to_policy(
+            policy, repo_config, org_sets_block_severities=org_sets_block_severities
+        )
+        sources, ignored_paths = filter_ignored_sources(ingested.sources, repo_config)
+        if ignored_paths:
+            logger.info(
+                "%s ignore-paths excluded %d file(s) from review",
+                CONFIG_PATH,
+                len(ignored_paths),
+                extra={"run_id": context.run_id},
+            )
         if runner is not None:
             resolved_runner = runner
         else:
             schema = _load_effective_schema(context, ingested, resolved_client)
             dialect, dialect_degraded = _resolve_dialect(context, resolved_client)
+            disabled = set(repo_config.disable_rules)
             resolved_runner = AnalysisRunner(
-                engine=RuleEngine(schema=schema), llm_provider=llm_provider, dialect=dialect
+                engine=RuleEngine(
+                    rules=[rule for rule in RULES if rule.rule_id not in disabled],
+                    schema=schema,
+                ),
+                llm_provider=llm_provider,
+                dialect=dialect,
             )
         result = resolved_runner.run_review(
             repo=context.repo,
             pr_number=context.pr_number,
-            sources=ingested.sources,
+            sources=sources,
             context=context,
-            initial_degraded_stages=[*ingested.degraded_stages, *dialect_degraded],
+            initial_degraded_stages=[
+                *ingested.degraded_stages,
+                *config_degraded,
+                *dialect_degraded,
+            ],
             resolve_source=_java_source_resolver(context, resolved_client),
             enforcement_policy=policy,
         )
@@ -585,6 +647,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             client=client,
             llm_provider=llm_provider,
             enforcement_policy=enforcement_policy,
+            org_sets_block_severities=_org_sets_block_severities(),
         )
         # Rendering is deliberately here, after every optional operation, so stdout
         # is always exactly the final report body and never a credential or log.
@@ -638,6 +701,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 # header), unlike ImportError above.
                 traceback.print_exception(type(error), error, error.__traceback__, file=sys.stderr)
         return exit_code
+
+
+def _org_sets_block_severities() -> bool:
+    """Whether ``QUERYGUARD_BLOCK_SEVERITIES`` was set explicitly (see ``repo_config``)."""
+    from queryguard.config import get_settings
+
+    value = get_settings().block_severities
+    return value is not None and bool(value.strip())
 
 
 def _print_enforcement_summary(result: ReviewResult) -> None:

@@ -107,6 +107,37 @@ Server). Nothing is guessed from the SQL text.
   `<tenant>` placeholders in schema names, `mysqldump` directives) is named in the
   review as `extract:<path>` and the rest of the run carries on.
 
+## Tuning it per repository: `.queryguard.yml`
+
+A repository can commit a `.queryguard.yml` at its root to tune QueryGuard without
+touching the shared workflow. It is read from the pull request's head commit over
+the API, like everything else, so no checkout is needed. Every key is optional:
+
+```yaml
+block-severities: [critical]   # which severities make the review REQUEST_CHANGES
+warn-rules: [no-limit]         # always shown, never blocking
+block-rules: [missing-where]   # always blocking, whatever the severity
+disable-rules: [select-star]   # static rules that do not run at all
+ignore-paths:                  # files QueryGuard does not read
+  - "src/test/**"
+  - "**/legacy/**"
+```
+
+- `block-severities: []` makes a repository advisory-only, which is the recommended
+  way to start: findings are posted, nothing blocks, and the team can judge the
+  signal before turning the gate on.
+- **The organisation outranks the repository.** If `QUERYGUARD_BLOCK_SEVERITIES` is
+  set (the `block-severities` workflow input), the file cannot loosen it. Rule lists
+  are additive on top of whatever the org set, and a `warn-rules` entry always beats
+  a `block-rules` entry.
+- **Strict on purpose.** An unknown key or invalid value is reported in the review as
+  a degraded `repo_config` stage and QueryGuard falls back to the defaults, so a typo
+  never silently turns a gate off.
+- `**` crosses directories, `*` and `?` do not.
+- `disable-rules` applies to the static rules (`missing-where`, `no-limit`,
+  `unindexed-filter`, `select-star`, `non-sargable`); to quiet N+1 findings use
+  `warn-rules` instead.
+
 ## Verifying it worked, and the most common first-run failure
 
 Open (or push to) a pull request in the consumer repository, then check two
