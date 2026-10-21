@@ -142,8 +142,12 @@ ignore-paths:                  # files QueryGuard does not read
   - "**/legacy/**"
 ```
 
-- `block-severities: []` makes a repository advisory-only, which is the recommended
-  way to start: findings are posted, nothing blocks, and the team can judge the
+- `block-severities: []` makes one repository advisory-only (only when the
+  organisation has not set `block-severities` or `advisory` itself). To make
+  *every* repository advisory, pass the workflow's `advisory: true`, which outranks
+  both the other blocking settings and this file. A blank `block-severities` does
+  **not** mean advisory: blank falls back to the default (`CRITICAL,HIGH` block). It is
+  the recommended way to start: findings are posted, nothing blocks, and the team can judge the
   signal before turning the gate on.
 - **The organisation outranks the repository.** If `QUERYGUARD_BLOCK_SEVERITIES` is
   set (the `block-severities` workflow input), the file cannot loosen it. Rule lists
@@ -281,8 +285,8 @@ lives and how the call is pinned. In order:
    provider has been approved for source code. It wins over a supplied
    `groq-api-key`: no provider is constructed and nothing but GitHub traffic leaves
    the runner. The review is then fully deterministic.
-6. **Roll out advisory first.** Set `block-severities: ""` (or have teams commit
-   `block-severities: []` in `.queryguard.yml`) so findings are posted but nothing
+6. **Roll out advisory first.** Pass `advisory: true` (the workflow input; it sets
+   `QUERYGUARD_ADVISORY`) so findings are posted but nothing
    blocks. Review the false-positive rate on real PRs, then turn blocking on and
    mark the check required.
 7. **Avoid one PR per repository** where your GitHub plan allows it: an organization
@@ -312,7 +316,7 @@ jobs:
       queryguard-repo: ORG/QueryGuard
       queryguard-ref: v0.1.0
       disable-llm: true
-      block-severities: ""        # advisory while piloting
+      advisory: true              # report everything, block nothing, while piloting
     secrets:
       queryguard-token: ${{ secrets.QUERYGUARD_INSTALL_TOKEN }}   # only if QueryGuard is private/internal
 ```

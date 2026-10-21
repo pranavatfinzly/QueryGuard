@@ -213,3 +213,20 @@ def test_an_invalid_config_degrades_loudly_and_never_changes_the_gate(
     # Defaults applied, so the real findings still block rather than the typo
     # quietly turning the gate off.
     assert result.status is EnforcementStatus.BLOCKED
+
+
+def test_advisory_cannot_be_reversed_by_a_repo_asking_for_blocking_rules(
+    recorded_pr: RecordedPullRequest,
+) -> None:
+    fake = _with_config(recorded_pr, "block-rules: [missing-where, no-limit]")
+
+    result = cli.review(
+        recorded_pr.repo,
+        recorded_pr.number,
+        client=fake.client,
+        enforcement_policy=EnforcementPolicy(advisory=True),
+    )
+
+    assert result.findings  # still reported
+    assert result.blocking_findings == []
+    assert result.status is not EnforcementStatus.BLOCKED

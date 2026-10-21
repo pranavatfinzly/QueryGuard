@@ -134,6 +134,11 @@ class EnforcementPolicy:
     blocking_rule_ids: frozenset[str] = field(default_factory=frozenset)
     warning_rule_ids: frozenset[str] = field(default_factory=frozenset)
     ignored_rule_ids: frozenset[str] = field(default_factory=frozenset)
+    #: Report everything, block nothing. Checked before any other rule, so neither a
+    #: ``block-rules`` entry in a repository's own config nor a blocking severity can
+    #: re-enable a gate the organisation turned off. This is the pilot setting: a team
+    #: sees real findings on real PRs before anything is allowed to stop a merge.
+    advisory: bool = False
 
     def should_block(self, finding: Finding) -> bool:
         """Whether this structured finding blocks under this policy.
@@ -142,6 +147,8 @@ class EnforcementPolicy:
         confidence, and any LLM-authored explanation are deliberately absent
         from this decision — see the module docstring.
         """
+        if self.advisory:
+            return False
         if finding.rule_id in self.ignored_rule_ids | self.warning_rule_ids:
             return False
         if finding.rule_id in self.blocking_rule_ids:

@@ -163,6 +163,13 @@ class Settings(BaseSettings):
         "Unset or blank means detect it from the repository's JDBC URL, falling back "
         "to postgres when that names nothing recognisable.",
     )
+    advisory: bool = Field(
+        default=False,
+        validation_alias="QUERYGUARD_ADVISORY",
+        description="Report every finding but block nothing: the review is always a COMMENT "
+        "and the CI check passes. Outranks the other blocking settings and a repository's "
+        "own .queryguard.yml. Use it while piloting.",
+    )
     block_severities: str | None = Field(
         default=None,
         validation_alias="QUERYGUARD_BLOCK_SEVERITIES",
@@ -191,6 +198,14 @@ class Settings(BaseSettings):
         validation_alias="QUERYGUARD_IGNORE_RULES",
         description="Optional comma-separated rule IDs that never block.",
     )
+
+    @field_validator("advisory", mode="before")
+    @classmethod
+    def _blank_advisory_is_off(cls, value: object) -> object:
+        """A workflow variable that is unset renders as the empty string, not as false."""
+        if isinstance(value, str) and not value.strip():
+            return False
+        return value
 
     @field_validator("groq_model", mode="before")
     @classmethod
@@ -305,6 +320,7 @@ class Settings(BaseSettings):
             )
         )
         return EnforcementPolicy(
+            advisory=self.advisory,
             blocking_severities=blocking,
             ignored_severities=ignored,
             blocking_rule_ids=parse_rule_ids(

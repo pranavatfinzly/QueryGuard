@@ -65,3 +65,12 @@ def test_disable_llm_defaults_off_and_passes_no_llm() -> None:
 
 def test_token_permissions_stay_minimal() -> None:
     assert _load()["permissions"] == {"contents": "read", "pull-requests": "write"}
+
+
+def test_advisory_input_defaults_off_and_reaches_the_cli_as_an_env_var() -> None:
+    inputs = _call()["inputs"]
+    review = next(step for step in _steps() if step.get("name") == "Review pull request")
+
+    assert inputs["advisory"]["default"] is False
+    assert inputs["advisory"]["type"] == "boolean"
+    assert "inputs.advisory" in review["env"]["QUERYGUARD_ADVISORY"]

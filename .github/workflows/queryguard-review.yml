@@ -28,6 +28,14 @@ on:
         description: "Override the default Groq model used for N+1 explanation prose."
         required: false
         type: string
+      advisory:
+        description: >-
+          Pilot mode. Every finding is still posted, but nothing blocks: the review is
+          always a COMMENT and the check passes. Outranks block-severities and a
+          repository's own .queryguard.yml. Turn it off to start enforcing.
+        required: false
+        type: boolean
+        default: false
       block-severities:
         description: "Comma-separated severities that make the review REQUEST_CHANGES. Defaults to CRITICAL,HIGH."
         required: false
@@ -117,6 +125,7 @@ jobs:
           GROQ_API_KEY: ${{ secrets.groq-api-key }}
           GROQ_MODEL: ${{ inputs.groq-model }}
           QUERYGUARD_BLOCK_SEVERITIES: ${{ inputs.block-severities }}
+          QUERYGUARD_ADVISORY: ${{ inputs.advisory }}
           PR_NUMBER: ${{ inputs.pr-number || github.event.pull_request.number }}
           # disable-llm wins over a supplied groq-api-key: --no-llm means no provider
           # is ever constructed, so nothing is sent off the runner but GitHub traffic.
