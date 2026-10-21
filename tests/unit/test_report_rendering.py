@@ -207,6 +207,7 @@ def enriched_report() -> Report:
                     )
                 ],
                 confidence=0.82,
+                confidence_basis="the model read the diff and no plan was available to check it",
             ),
             Finding(
                 rule_id="unindexed-filter",
@@ -407,12 +408,24 @@ def test_a_cross_query_finding_names_the_other_queries_it_spans() -> None:
     assert "with `src/ReportingService.java:48`" in rendered
 
 
-def test_an_unverified_finding_is_labelled_with_its_confidence() -> None:
+def test_an_unverified_finding_says_how_strong_the_evidence_is_and_why() -> None:
     # CLAUDE.md: findings from Claude are claims, not facts. Where a claim cannot
-    # be checked against a plan or an AST, the report says so.
+    # be checked against a plan or an AST, the report says so, and gives the reason.
     rendered = render_markdown(enriched_report())
 
-    assert "Confidence: 82%" in rendered
+    assert (
+        "*Evidence strength: strong, inferred — the model read the diff and no plan was "
+        "available to check it." in rendered
+    )
+
+
+def test_confidence_is_never_rendered_as_a_percentage() -> None:
+    # The value is an ordinal per evidence tier, not a probability. Printing "75%" on
+    # every finding read as calibration it does not have.
+    rendered = render_markdown(enriched_report())
+
+    assert "82%" not in rendered
+    assert "Confidence:" not in rendered
 
 
 def test_a_measured_index_suggestion_shows_the_cost_delta() -> None:

@@ -69,5 +69,12 @@ class Finding(Contract):
         description="Set when a finding could not be verified against real SQL or a "
         "real plan — an LLM-derived claim, or a static finding raised against a Spring "
         "Data derived-method's rendered pseudo-SQL rather than a query the application "
-        "will actually issue.",
+        "will actually issue. An ordinal strength, not a probability: it is a fixed value "
+        "per evidence tier and is never rendered as a percentage.",
+    )
+    confidence_basis: str | None = Field(
+        default=None,
+        description="The checkable conditions behind `confidence`, as one clause a reviewer "
+        "can verify (what feeds the call, what was resolved, what was only inferred). "
+        "Shown in place of a number.",
     )

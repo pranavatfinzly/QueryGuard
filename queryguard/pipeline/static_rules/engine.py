@@ -106,7 +106,15 @@ class RuleEngine:
         """Label a finding as unverified, unless a rule already set its own confidence."""
         if finding.confidence is not None:
             return finding
-        return finding.model_copy(update={"confidence": _INFERRED_CONFIDENCE})
+        return finding.model_copy(
+            update={
+                "confidence": _INFERRED_CONFIDENCE,
+                "confidence_basis": (
+                    "the SQL shown is rendered from the repository method's name, and "
+                    "Spring Data may issue a different statement (a join, for example)"
+                ),
+            }
+        )
 
     def _parse(self, query: ExtractedQuery) -> exp.Expression | None:
         """Parse one query, or return None having logged why it could not be."""

@@ -386,15 +386,27 @@ def _finding_blocks(finding: Finding, queries: dict[str, ExtractedQuery]) -> lis
     blocks.extend(_suggestion_blocks(finding.suggestions))
 
     if finding.confidence is not None:
-        # CLAUDE.md: a claim that could not be checked against a plan or an AST is
-        # labelled rather than presented as established.
-        blocks.append(
-            f"*Confidence: {finding.confidence:.0%} — this finding was inferred and "
-            f"could not be verified automatically.*"
-        )
+        blocks.append(_evidence_strength(finding))
 
     blocks.append(f"<sub>`{finding.rule_id}`</sub>")
     return blocks
+
+
+def _evidence_strength(finding: Finding) -> str:
+    """How far to trust a finding that could not be verified, in words and with reasons.
+
+    Not a percentage. The underlying value is an ordinal per evidence tier, and nearly
+    every finding in a review shares a tier, so "75%" on each one looked like a
+    calibrated probability and said nothing about why. A band plus the specific
+    conditions behind it is both honest about what the number is and useful.
+    """
+    value = finding.confidence if finding.confidence is not None else 0.0
+    band = "strong" if value >= 0.7 else "moderate" if value >= 0.5 else "weak"
+    reason = f" — {finding.confidence_basis}" if finding.confidence_basis else ""
+    return (
+        f"*Evidence strength: {band}, inferred{reason}. "
+        f"This was not confirmed against a running system or a query plan.*"
+    )
 
 
 def _finding_anchor(finding: Finding, queries: dict[str, ExtractedQuery]) -> str:
