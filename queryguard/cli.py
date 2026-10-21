@@ -406,7 +406,9 @@ def _java_source_resolver(context: RunContext, client: Github) -> ResolveJavaSou
     return resolve
 
 
-def _resolve_dialect(context: RunContext, client: Github) -> tuple[str | None, list[str]]:
+def _resolve_dialect(
+    context: RunContext, client: Github, changed_paths: Sequence[str] = ()
+) -> tuple[str | None, list[str]]:
     """The SQL dialect for this run, plus any degradation worth naming.
 
     ``QUERYGUARD_SQL_DIALECT`` wins; otherwise it is detected from the repository's
@@ -416,7 +418,7 @@ def _resolve_dialect(context: RunContext, client: Github) -> tuple[str | None, l
     operator believes is MySQL.
     """
     from queryguard.config import get_settings
-    from queryguard.db.dialect import detect_sql_dialect, is_known_dialect
+    from queryguard.db.dialect import config_candidates_for, detect_sql_dialect, is_known_dialect
     from queryguard.integrations.github import GitHubUnavailable, read_file_at_ref
 
     override = (get_settings().sql_dialect or "").strip()
@@ -435,7 +437,7 @@ def _resolve_dialect(context: RunContext, client: Github) -> tuple[str | None, l
         except GitHubUnavailable:
             return None
 
-    return detect_sql_dialect(read), []
+    return detect_sql_dialect(read, candidate_paths=config_candidates_for(changed_paths)), []
 
 
 def _load_repo_config(context: RunContext, client: Github) -> tuple[RepoConfig, list[str]]:
@@ -573,7 +575,9 @@ def review(
             resolved_runner = runner
         else:
             schema = _load_effective_schema(context, ingested, resolved_client)
-            dialect, dialect_degraded = _resolve_dialect(context, resolved_client)
+            dialect, dialect_degraded = _resolve_dialect(
+                context, resolved_client, [source.path for source in sources]
+            )
             disabled = set(repo_config.disable_rules)
             resolved_runner = AnalysisRunner(
                 engine=RuleEngine(

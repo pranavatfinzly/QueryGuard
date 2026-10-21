@@ -8,7 +8,7 @@ import pytest
 
 from queryguard import cli
 from queryguard.config import override_settings
-from queryguard.db.dialect import detect_sql_dialect, is_known_dialect
+from queryguard.db.dialect import config_candidates_for, detect_sql_dialect, is_known_dialect
 from queryguard.models.query import SourceFile
 from queryguard.pipeline.runner import AnalysisRunner
 from tests.conftest import RecordedGitHub, RecordedPullRequest
@@ -181,3 +181,66 @@ def test_a_typo_in_the_override_is_named_not_silently_ignored(
         result = cli.review(recorded_pr.repo, recorded_pr.number, client=fake.client, dry_run=True)
 
     assert any(stage.startswith("sql_dialect:") for stage in result.report.degraded_stages)
+
+
+# --- multi-module repositories ----------------------------------------------------
+
+
+def test_candidates_start_with_the_conventional_root_locations_unchanged() -> None:
+    from queryguard.db.discovery import DEFAULT_CANDIDATE_PATHS
+
+    candidates = config_candidates_for([])
+
+    assert candidates[: len(DEFAULT_CANDIDATE_PATHS)] == DEFAULT_CANDIDATE_PATHS
+
+
+def test_the_module_of_each_changed_file_contributes_its_own_config() -> None:
+    candidates = config_candidates_for(
+        ["svc-a/src/main/java/A.java", "svc-b/src/main/resources/db/1.sql"]
+    )
+
+    assert "svc-a/src/main/resources/bootstrap.properties" in candidates
+    assert "svc-a/src/main/resources/application.yml" in candidates
+    assert "svc-b/src/main/resources/bootstrap.properties" in candidates
+
+
+def test_nested_modules_use_the_directory_above_src() -> None:
+    candidates = config_candidates_for(["platform/payments/src/main/java/A.java"])
+
+    assert "platform/payments/src/main/resources/application.properties" in candidates
+
+
+def test_a_root_level_src_path_does_not_invent_a_module() -> None:
+    candidates = config_candidates_for(["src/main/java/A.java", "README.md", "docs/a.sql"])
+
+    assert not any(path.startswith("/") or path.startswith("src/src") for path in candidates)
+    assert len(candidates) == len(set(candidates))  # no duplicates
+
+
+def test_candidates_are_deterministic_whatever_order_files_arrive_in() -> None:
+    forward = config_candidates_for(["a/src/x", "b/src/y"])
+    backward = config_candidates_for(["b/src/y", "a/src/x"])
+
+    assert forward == backward
+
+
+def test_review_detects_the_dialect_from_a_modules_bootstrap_properties(
+    recorded_pr: RecordedPullRequest,
+) -> None:
+    # The shape of the real galaxy-payment repository: the datasource URL lives in a
+    # module's bootstrap.properties, not in the root application.properties.
+    module = "svc/src/main/resources"
+    head_text = {
+        **recorded_pr.head_text,
+        f"{module}/db/001.sql": MYSQL_MIGRATION,
+        f"{module}/bootstrap.properties": "spring.datasource.url=jdbc:mysql://h/db\n",
+    }
+    pull = dataclasses.replace(
+        recorded_pr, entries=(_entry(f"{module}/db/001.sql"),), head_text=head_text
+    )
+    fake = RecordedGitHub(recorded=pull)
+
+    result = cli.review(pull.repo, pull.number, client=fake.client, dry_run=True)
+
+    assert not any(stage.startswith("extract:") for stage in result.report.degraded_stages)
+    assert len(result.report.queries) == 2

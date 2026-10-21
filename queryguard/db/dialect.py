@@ -16,11 +16,11 @@ one — the caller then keeps the default, exactly as before this module existed
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 
 from queryguard.db.discovery import DEFAULT_CANDIDATE_PATHS
 
-__all__ = ["detect_sql_dialect", "is_known_dialect"]
+__all__ = ["config_candidates_for", "detect_sql_dialect", "is_known_dialect"]
 
 #: JDBC subprotocol -> sqlglot dialect. H2 is deliberately absent: it is the
 #: in-memory test database, and says nothing about the production dialect.
@@ -32,7 +32,44 @@ _JDBC_DIALECTS: dict[str, str] = {
     "sqlserver": "tsql",
 }
 
+_CONFIG_NAMES = ("application", "bootstrap")
+_CONFIG_EXTENSIONS = ("properties", "yml", "yaml")
+
 _JDBC_URL = re.compile(r"jdbc:(?P<protocol>[a-z0-9]+):", re.IGNORECASE)
+
+
+def config_candidates_for(changed_paths: Iterable[str]) -> tuple[str, ...]:
+    """Where a repository might keep its datasource URL, given the files a PR changed.
+
+    A single-module Spring Boot repository keeps ``application.properties`` at the
+    root's ``src/main/resources``. A multi-module one keeps it inside the module, and
+    Spring Cloud services often put the datasource in ``bootstrap.properties`` instead
+    (the Finzly ``galaxy-payment`` repository does both), so reading only the root
+    found nothing there and every SQL file was parsed as Postgres.
+
+    The conventional root locations come first, unchanged. After them, for each module
+    containing a changed file (the directory above its ``src/``), that module's
+    ``application`` and ``bootstrap`` files. Derived from the changed paths rather than
+    from a repository-wide scan, so a PR costs a handful of reads, and so the module
+    consulted is the one the change actually belongs to.
+    """
+    ordered = list(DEFAULT_CANDIDATE_PATHS)
+    ordered += [f"src/main/resources/bootstrap.{ext}" for ext in _CONFIG_EXTENSIONS] + [
+        f"bootstrap.{ext}" for ext in _CONFIG_EXTENSIONS
+    ]
+
+    modules = sorted(
+        {
+            path.split("/src/", 1)[0]
+            for path in changed_paths
+            if "/src/" in path and not path.startswith("src/")
+        }
+    )
+    for module in modules:
+        for name in _CONFIG_NAMES:
+            ordered += [f"{module}/src/main/resources/{name}.{ext}" for ext in _CONFIG_EXTENSIONS]
+
+    return tuple(dict.fromkeys(ordered))  # de-duplicated, order preserved
 
 
 def detect_sql_dialect(
