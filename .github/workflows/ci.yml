@@ -1,0 +1,40 @@
+name: CI
+
+# QueryGuard gates other repositories' pull requests, so its own changes are held
+# to the same bar: lint, strict typecheck and the full unit suite on every PR.
+# None of it needs Docker, a JDK, or credentials.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Install
+        run: python -m pip install -e ".[dev]"
+      - name: Format
+        run: ruff format --check .
+      - name: Lint
+        run: ruff check .
+      - name: Typecheck
+        run: mypy
+      - name: Test
+        run: pytest

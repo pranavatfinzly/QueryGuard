@@ -219,16 +219,36 @@ def test_registering_two_rules_with_the_same_id_is_rejected() -> None:
 
 def test_findings_against_a_derived_method_are_marked_unverified() -> None:
     # `findByCustomerId` on a `@ManyToOne` compiles to a JOIN Spring Data issues and
-    # this renderer cannot see (CLAUDE.md's caution). The rendered pseudo-SQL still
-    # says `SELECT * FROM ...`, so `select-star` still fires — but the finding must
-    # not be presented as a claim about SQL the application actually runs.
+    # this renderer cannot see (CLAUDE.md's caution). Whatever a rule says about the
+    # rendered pseudo-SQL is a claim about SQL the application may not run, so the
+    # engine marks it unverified.
+    class _AlwaysFires:
+        rule_id = "always"
+
+        def check(self, context: RuleContext) -> list[Finding]:
+            return [
+                context.finding(
+                    rule_id="always", severity=Severity.LOW, title="t", explanation="e", impact="i"
+                )
+            ]
+
     derived = parse_derived_method("findByCustomerId", entity="OrderRepository", path="Repo.java")
     assert derived is not None
 
-    findings = RuleEngine().analyze([derived])
+    findings = RuleEngine(rules=[_AlwaysFires()]).analyze([derived])
 
-    assert [finding.rule_id for finding in findings] == ["select-star"]
+    assert [finding.rule_id for finding in findings] == ["always"]
     assert findings[0].confidence == _INFERRED_CONFIDENCE
+
+
+def test_select_star_stays_silent_on_a_derived_method() -> None:
+    # The `*` in a derived method's pseudo-SQL is rendered by QueryGuard, not written by
+    # the author, and the framework loads the whole entity by contract. A pilot on a real
+    # codebase showed this was 79 of 88 select-star findings: all noise.
+    derived = parse_derived_method("findByCustomerId", entity="OrderRepository", path="Repo.java")
+    assert derived is not None
+
+    assert RuleEngine().analyze([derived]) == []
 
 
 def test_findings_against_real_sql_are_not_marked_unverified() -> None:

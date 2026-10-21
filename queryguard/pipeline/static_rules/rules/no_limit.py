@@ -52,6 +52,8 @@ class NoLimitRule:
             return []
         if has_clause(node, "limit", "fetch", "where"):
             return []
+        if self._filtered_by_join_condition(node):
+            return []
         if self._returns_single_row(node):
             return []
 
@@ -88,6 +90,35 @@ class NoLimitRule:
                 ],
             )
         ]
+
+    @staticmethod
+    def _filtered_by_join_condition(node: exp.Select) -> bool:
+        """True when an INNER JOIN's ``ON`` constrains a column to a value.
+
+        ``... INNER JOIN b.file f ON f.fileNumber = :fileNumber`` is a filter written
+        in the join: the result is restricted to one file exactly as if the predicate
+        sat in a WHERE. Only an inner join counts — an outer join's ``ON`` decides
+        which right-hand rows attach, not which left-hand rows survive — and only a
+        comparison of a column against a parameter or literal does, since
+        ``ON a.id = b.id`` relates two tables without selecting anything.
+        """
+        for join in node.args.get("joins") or []:
+            if join.args.get("side"):
+                continue
+            on = join.args.get("on")
+            if on is None:
+                continue
+            for comparison in on.find_all(exp.EQ, exp.GT, exp.GTE, exp.LT, exp.LTE, exp.In):
+                sides = [comparison.this, comparison.args.get("expression")]
+                has_column = [
+                    isinstance(side, exp.Expression) and side.find(exp.Column) is not None
+                    for side in sides
+                ]
+                if sorted(has_column) == [False, True] or (
+                    isinstance(comparison, exp.In) and has_column[0]
+                ):
+                    return True
+        return False
 
     @staticmethod
     def _returns_single_row(node: exp.Select) -> bool:

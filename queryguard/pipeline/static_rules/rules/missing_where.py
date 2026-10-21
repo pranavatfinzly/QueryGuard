@@ -43,6 +43,11 @@ class MissingWhereRule:
         # is constrained by the join, and a LIMIT bounds the row count directly.
         if has_clause(node, "using", "limit"):
             return []
+        # MySQL's multi-table form, `UPDATE a JOIN b ON ... SET ...`, is likewise
+        # confined to the rows the join matches; sqlglot hangs the joins on the
+        # target table rather than on the statement.
+        if isinstance(node.this, exp.Table) and node.this.args.get("joins"):
+            return []
 
         verb = "UPDATE" if isinstance(node, exp.Update) else "DELETE"
         target = self._target_name(node) or "the target table"

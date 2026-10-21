@@ -24,6 +24,14 @@ FLAGGED = [
         "SELECT status, COUNT(*) FROM orders GROUP BY status",
         id="group-by-returns-one-row-per-group-not-one-row",
     ),
+    pytest.param(
+        "SELECT a.id FROM a JOIN b ON a.id = b.a_id",
+        id="join-relating-two-tables-selects-nothing",
+    ),
+    pytest.param(
+        "SELECT a.id FROM a LEFT JOIN b ON a.id = b.a_id AND b.kind = 'X'",
+        id="outer-join-on-picks-right-rows-every-left-row-survives",
+    ),
 ]
 
 NOT_FLAGGED = [
@@ -43,6 +51,14 @@ NOT_FLAGGED = [
         id="inner-select-is-bounded-by-its-use",
     ),
     pytest.param("UPDATE orders SET status = 'X'", id="write-is-missing-wheres-job"),
+    pytest.param(
+        "SELECT b FROM BulkFileBatch b INNER JOIN b.bulkPaymentFile f ON f.fileNumber = :fileNumber",
+        id="false-positive-guard-filter-written-in-an-inner-join-on",
+    ),
+    pytest.param(
+        "SELECT a.* FROM a JOIN b ON a.id = b.id AND b.file_number = ?",
+        id="inner-join-on-with-a-bound-parameter-filters",
+    ),
 ]
 
 
