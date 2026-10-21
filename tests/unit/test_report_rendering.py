@@ -599,3 +599,98 @@ def _regenerate() -> None:
 
 if __name__ == "__main__":
     _regenerate()
+
+
+# --- Bounded output: GitHub refuses a review body over 65,536 characters -----------
+
+
+def _big_finding(index: int, *, severity: Severity = Severity.MEDIUM, size: int = 3_000) -> Finding:
+    return Finding(
+        rule_id="big",
+        severity=severity,
+        title=f"Finding {index}",
+        explanation="x" * size,
+        impact="i",
+        provenance=Provenance(file=f"f{index}.sql", line=1),
+    )
+
+
+def _one_query() -> ExtractedQuery:
+    return ExtractedQuery(
+        id="f0.sql:1",
+        kind=QueryKind.RAW_SQL,
+        text="SELECT 1",
+        provenance=Provenance(file="f0.sql", line=1),
+    )
+
+
+def test_a_body_that_is_too_large_sheds_its_lowest_priority_findings_first() -> None:
+    findings = [_big_finding(0, severity=Severity.CRITICAL)]
+    findings += [_big_finding(i) for i in range(1, 60)]
+    report = Report(context=context(), queries=[_one_query()], findings=findings)
+
+    rendered = render_markdown(report, max_chars=20_000)
+
+    assert len(rendered) <= 20_000
+    assert "Finding 0" in rendered  # the worst finding always survives
+    assert "Finding 59" not in rendered
+    assert "lower-priority findings are omitted" in rendered
+
+
+def test_an_enormous_finding_is_dropped_and_counted_not_silently_lost() -> None:
+    report = Report(
+        context=context(), queries=[_one_query()], findings=[_big_finding(0, size=200_000)]
+    )
+
+    rendered = render_markdown(report, max_chars=10_000)
+
+    assert len(rendered) <= 10_000
+    assert "found 1 problem" in rendered
+    assert "1 lower-priority finding is omitted" in rendered
+
+
+def test_when_nothing_else_fits_the_body_is_cut_at_a_boundary_and_says_so() -> None:
+    report = Report(
+        context=context(), queries=[_one_query()], findings=[_big_finding(0, size=5_000)]
+    )
+
+    rendered = render_markdown(report, max_chars=300)
+
+    assert len(rendered) <= 300
+    assert "cut short because it exceeded GitHub's size limit" in rendered
+    assert rendered.count("```") % 2 == 0  # never leaves a code fence open
+
+
+def test_the_default_limit_keeps_a_real_review_under_githubs() -> None:
+    findings = [_big_finding(i, size=6_000) for i in range(20)]
+    report = Report(context=context(), queries=[_one_query()], findings=findings)
+
+    rendered = render_markdown(report)
+
+    assert len(rendered) <= 60_000 < 65_536
+
+
+def test_a_normal_report_is_untouched_by_the_guard() -> None:
+    report = enriched_report()
+
+    assert render_markdown(report) == render_markdown(report, max_chars=10_000_000)
+
+
+def test_a_long_list_of_unreadable_files_is_capped_and_counted() -> None:
+    report = Report(
+        context=context(), degraded_stages=[f"extract:db/{i:03}.sql" for i in range(60)]
+    )
+
+    rendered = render_markdown(report)
+
+    assert "`db/024.sql`" in rendered
+    assert "`db/025.sql`" not in rendered
+    assert "…and 35 more" in rendered
+
+
+def test_one_enormous_error_message_cannot_blow_the_body() -> None:
+    report = Report(context=context(), degraded_stages=["ingest:" + "boom " * 50_000])
+
+    rendered = render_markdown(report)
+
+    assert len(rendered) < 2_000

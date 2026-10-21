@@ -60,6 +60,16 @@ _SEVERITY_RANK: dict[Severity, int] = {
 #: this file.
 DEFAULT_MAX_FINDINGS = 20
 
+#: GitHub rejects a review or comment body over 65,536 characters (422), which would
+#: lose the whole review. Rendering stays well inside it so the posted body is never the
+#: thing that fails: 60,000 leaves room for the marker, the status line, and any
+#: surrounding markup GitHub adds.
+MAX_BODY_CHARS = 60_000
+
+#: Longest list of unreadable files or queries printed. A pilot repository had 55 SQL
+#: files that could not be parsed; naming each is useful at 5 and noise at 55.
+_LIST_CAP = 25
+
 #: Fence language for quoted query text. JPQL and derived-method renderings are not
 #: SQL, but GitHub has no lexer for them and `sql` highlights them acceptably; the
 #: kind is stated in prose beside the block rather than implied by the fence.
@@ -130,7 +140,12 @@ def cap_findings(
     return findings[:max_findings], len(findings) - max_findings
 
 
-def render_markdown(report: Report, *, enforcement: ReviewResult | None = None) -> str:
+def render_markdown(
+    report: Report,
+    *,
+    enforcement: ReviewResult | None = None,
+    max_chars: int = MAX_BODY_CHARS,
+) -> str:
     """Render a report as the Markdown body of the PR comment or Review.
 
     The body carries a hidden marker as its first line so a re-run finds and
@@ -153,7 +168,46 @@ def render_markdown(report: Report, *, enforcement: ReviewResult | None = None) 
 
     Pure: the same report and enforcement result always render byte-identical
     Markdown.
+
+    The body is bounded by ``max_chars`` (GitHub refuses anything over 65,536, and a
+    refused review is a lost review). When it would not fit, the lowest-priority
+    findings are dropped first, repeatedly, counted in the summary exactly as the
+    findings cap already is; as a last resort the text is cut at a block boundary with
+    any open code fence closed, and says so.
     """
+    body = _render(report, enforcement)
+    shown = len(report.findings)
+    while len(body) > max_chars and shown > 0:
+        shown //= 2
+        trimmed = report.model_copy(
+            update={
+                "findings": report.findings[:shown],
+                "omitted_findings": report.omitted_findings + len(report.findings) - shown,
+            }
+        )
+        body = _render(trimmed, enforcement)
+    return body if len(body) <= max_chars else _hard_truncate(body, max_chars)
+
+
+_TRUNCATION_NOTICE = (
+    "\n\n---\n"
+    "*This review was cut short because it exceeded GitHub's size limit for a "
+    "review body. The findings above are the highest-priority ones.*\n"
+)
+
+
+def _hard_truncate(body: str, max_chars: int) -> str:
+    """Cut at the last block boundary that fits, closing any code fence left open."""
+    budget = max_chars - len(_TRUNCATION_NOTICE) - 8
+    cut = body.rfind("\n\n", 0, max(budget, 0))
+    head = body[: cut if cut > 0 else max(budget, 0)]
+    if head.count("```") % 2 == 1:
+        head += "\n```"
+    return head + _TRUNCATION_NOTICE
+
+
+def _render(report: Report, enforcement: ReviewResult | None) -> str:
+    """The unbounded rendering; :func:`render_markdown` decides whether it fits."""
     queries = _queries_by_id(report.queries)
     unanalyzable = [query for query in report.queries if query.parse_error is not None]
 
@@ -276,8 +330,21 @@ def _degraded_section(degraded_stages: Sequence[str]) -> list[str]:
             "the change does. Everything below is still accurate — it is just not "
             "everything."
         ),
-        "\n".join(f"- {_degraded_item(stage)}" for stage in degraded_stages),
+        _capped_list([_degraded_item(stage) for stage in degraded_stages]),
     ]
+
+
+def _clip(item: str, limit: int = 300) -> str:
+    """Bound one list entry: an exception message can run to kilobytes."""
+    return item if len(item) <= limit else item[: limit - 1] + "…"
+
+
+def _capped_list(items: Sequence[str]) -> str:
+    """A bullet list that stops at :data:`_LIST_CAP` and says how many it left out."""
+    lines = [f"- {_clip(item)}" for item in items[:_LIST_CAP]]
+    if len(items) > _LIST_CAP:
+        lines.append(f"- …and {len(items) - _LIST_CAP} more")
+    return "\n".join(lines)
 
 
 def _degraded_item(marker: str) -> str:
@@ -307,7 +374,9 @@ def _unanalyzable_section(unanalyzable: Sequence[ExtractedQuery]) -> list[str]:
     return [
         "### ⚠️ Queries that could not be parsed",
         ("These were found in the change but could not be read, so no rule ran against them."),
-        "\n".join(f"- {_anchor(query)} — {_one_line(query.parse_error)}" for query in unanalyzable),
+        _capped_list(
+            [f"{_anchor(query)} — {_one_line(query.parse_error)}" for query in unanalyzable]
+        ),
     ]
 
 

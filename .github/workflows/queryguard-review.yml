@@ -85,8 +85,13 @@ permissions:
 jobs:
   review:
     runs-on: ubuntu-latest
+    # A hung run must not hold a runner for the default six hours; a normal review
+    # takes well under a minute.
+    timeout-minutes: 15
     steps:
-      - uses: actions/setup-python@v5
+      # Pinned to a full commit SHA, not a tag: a tag can be moved, and this workflow runs
+      # in every consumer repository (v5.6.0).
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
           python-version: ${{ inputs.python-version }}
       - name: Install QueryGuard

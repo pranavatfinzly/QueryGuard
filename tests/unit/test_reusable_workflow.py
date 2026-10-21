@@ -74,3 +74,25 @@ def test_advisory_input_defaults_off_and_reaches_the_cli_as_an_env_var() -> None
     assert inputs["advisory"]["default"] is False
     assert inputs["advisory"]["type"] == "boolean"
     assert "inputs.advisory" in review["env"]["QUERYGUARD_ADVISORY"]
+
+
+def test_every_third_party_action_is_pinned_to_a_commit_sha() -> None:
+    # A tag can be moved after the fact, and this workflow runs in every consumer
+    # repository, so a moved tag would be an org-wide supply-chain hole.
+    import re
+
+    for workflow in Path(".github/workflows").glob("*.yml"):
+        for line in workflow.read_text(encoding="utf-8").splitlines():
+            match = re.search(r"uses:\s*(\S+)", line)
+            if match is None or match.group(1).startswith("./"):
+                continue
+            action = match.group(1)
+            if ".github/workflows/" in action:  # reusable workflow call (pinned by consumers)
+                continue
+            assert re.search(r"@[0-9a-f]{40}$", action), f"{workflow.name}: {action} is not pinned"
+
+
+def test_the_review_job_cannot_hang_for_hours() -> None:
+    job = _load()["jobs"]["review"]
+
+    assert 1 <= job["timeout-minutes"] <= 30
