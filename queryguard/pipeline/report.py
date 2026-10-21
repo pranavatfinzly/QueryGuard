@@ -228,6 +228,13 @@ def _summary(report: Report, unanalyzable: Sequence[ExtractedQuery]) -> str:
                 f"{report.omitted_findings} lower-priority {noun} {verb} omitted."
             )
 
+    if report.unchanged_findings:
+        noun = "finding" if report.unchanged_findings == 1 else "findings"
+        found += (
+            f" {report.unchanged_findings} more {noun} in code this change did not touch "
+            f"{'is' if report.unchanged_findings == 1 else 'are'} not shown."
+        )
+
     if report.degraded_stages or unanalyzable:
         return f"{found} **Part of this change could not be reviewed — see below.**"
     return found

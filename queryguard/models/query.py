@@ -51,6 +51,24 @@ class Hunk(Contract):
         ge=0, description="First line of the region in the head file. 0 for a deleted file."
     )
     head_lines: int = Field(ge=0, description="How many head lines the region spans.")
+    added_ranges: list[tuple[int, int]] = Field(
+        default_factory=list,
+        description="Inclusive head-line ranges of the lines the change actually added or "
+        "rewrote, as opposed to the unchanged context GitHub pads every hunk with (three "
+        "lines either side). Empty when unknown, in which case the whole hunk is taken "
+        "to be the change.",
+    )
+
+    def touches(self, line: int) -> bool:
+        """Whether ``line`` was written by this change, not merely shown beside it.
+
+        The hunk's own span includes context lines, so "inside the hunk" would credit a
+        change with a line two rows from its real edit. When the exact added ranges are
+        known they decide; otherwise the hunk's span is the best available answer.
+        """
+        if not self.added_ranges:
+            return self.covers(line)
+        return any(start <= line <= end for start, end in self.added_ranges)
 
     @property
     def head_end(self) -> int:
@@ -120,6 +138,15 @@ class Provenance(Contract):
     symbol: str | None = Field(
         default=None,
         description="Enclosing method, repository, or migration name, when known.",
+    )
+    span_start: int | None = Field(
+        default=None,
+        description="First line of the code a finding concerns, when that is wider than "
+        "the anchor `line` (an N+1 concerns the whole stretch from the loop to the "
+        "call). Used to decide whether a pull request touched what the finding is about.",
+    )
+    span_end: int | None = Field(
+        default=None, description="Last line of that extent; see `span_start`."
     )
 
 

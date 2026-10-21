@@ -33,6 +33,14 @@ class Report(Contract):
         default=None,
         description="The ID of the comment posted to the pull request, if any.",
     )
+    unchanged_findings: int = Field(
+        default=0,
+        ge=0,
+        description="Findings on code this pull request did not change. They were found "
+        "but are neither shown nor enforced: a reviewer is asked about what the PR "
+        "touched, not about legacy code in a file it happened to edit. Counted so the "
+        "report can say so instead of implying the surrounding code is clean.",
+    )
     omitted_findings: int = Field(
         default=0,
         ge=0,

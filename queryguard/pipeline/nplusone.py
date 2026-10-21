@@ -510,6 +510,8 @@ def render_candidate(candidate: NPlusOneCandidate) -> Finding:
             file=candidate.file,
             line=candidate.line,
             symbol=candidate.enclosing_method,
+            span_start=min(candidate.iteration_line, candidate.line),
+            span_end=max(candidate.iteration_line, candidate.line),
         ),
         query_id=candidate.query_id,
         query_ids=list(candidate.query_ids),

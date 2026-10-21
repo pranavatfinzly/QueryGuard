@@ -128,7 +128,10 @@ def test_offline_fixture_dry_run_needs_no_token_network_or_writes(
     )
     rendered = capsys.readouterr().out
     assert rendered.startswith("<!-- queryguard:review -->\n\n## QueryGuard\n\nStatus: BLOCKED\n")
-    assert "Reviewed 20 queries and found 9 problems." in rendered
+    assert (
+        "Reviewed 20 queries and found 7 problems. 2 more findings in code this change did not touch are not shown."
+        in rendered
+    )
     # The fixture client intentionally has no comment API at all.
     assert not hasattr(
         client.get_repo(recorded.repo).get_pull(recorded.number), "create_issue_comment"
