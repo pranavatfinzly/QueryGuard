@@ -80,3 +80,21 @@ def test_update_and_delete_get_different_impact_text(
     assert "rewritten" in update.impact
     assert "deleted" in delete.impact
     assert update.impact != delete.impact
+
+
+def test_a_mysql_joined_update_is_scoped_by_its_join(
+    make_context: Callable[..., RuleContext],
+) -> None:
+    # Found in a real migration: `UPDATE p JOIN s ON ... SET ...` rewrites only the rows
+    # the join matches, so "no WHERE" does not mean "every row".
+    sql = "UPDATE payment AS p JOIN bulk_file AS s ON p.file_no = s.file_number SET p.t = s.t"
+
+    assert MissingWhereRule().check(make_context(sql, dialect="mysql")) == []
+
+
+def test_a_plain_mysql_update_with_no_where_still_fires(
+    make_context: Callable[..., RuleContext],
+) -> None:
+    findings = MissingWhereRule().check(make_context("UPDATE payment SET t = 1", dialect="mysql"))
+
+    assert [finding.rule_id for finding in findings] == ["missing-where"]

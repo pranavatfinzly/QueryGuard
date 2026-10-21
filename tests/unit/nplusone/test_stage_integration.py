@@ -68,8 +68,10 @@ def test_the_finding_reaches_the_rendered_comment(service: Build, repository: Bu
 
     assert "Potential N+1 query pattern" in markdown
     assert REPOSITORY_CALL_RULE_ID in markdown
-    # The cross-file anchor the renderer already supported and nothing populated.
-    assert "with `" in markdown
+    # The anchor names the calling method, and the evidence names the repository call
+    # that sits inside the loop: this is what a reviewer acts on.
+    assert "ExampleService.java:15" in markdown
+    assert "ThingRepository.findByParentId" in markdown
 
 
 def test_a_sql_only_run_is_unaffected() -> None:
