@@ -117,6 +117,11 @@ or `application.yml` at the PR head (`jdbc:mysql:` and `jdbc:mariadb:` read as M
 `jdbc:postgresql:` as Postgres, `jdbc:oracle:` as Oracle, `jdbc:sqlserver:` as SQL
 Server). Nothing is guessed from the SQL text.
 
+It looks in the conventional root locations first, then in the module of every file
+the PR changed: `<module>/src/main/resources/application.*` and `bootstrap.*`. That
+matters for multi-module repositories (and Spring Cloud services that keep the
+datasource in `bootstrap.properties`), where the root has no config at all.
+
 - A URL that is a placeholder (`${DB_URL}`), commented out, or an in-memory H2 test
   database names nothing, and the default (Postgres) is kept.
 - Set `QUERYGUARD_SQL_DIALECT` (a `sqlglot` dialect name such as `mysql`) to
