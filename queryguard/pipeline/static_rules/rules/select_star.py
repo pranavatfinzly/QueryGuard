@@ -5,6 +5,7 @@ from __future__ import annotations
 from sqlglot import exp
 
 from queryguard.models.finding import Finding, Severity, Suggestion
+from queryguard.models.query import QueryKind
 from queryguard.pipeline.static_rules.base import RuleContext, register
 
 __all__ = ["SelectStarRule"]
@@ -16,11 +17,20 @@ class SelectStarRule:
     Matches a bare ``*`` and a qualified ``t.*`` alike. ``COUNT(*)`` is not a
     projection of every column — the star there is an argument to an aggregate and
     reads no column data — so it is excluded.
+
+    A Spring Data derived method (``findByFileNumber``) is excluded too. Its ``*`` is
+    something QueryGuard rendered, not something the author wrote: the framework
+    loads the whole entity by contract, so there is no projection for the author to
+    narrow and nothing in the diff to act on. Flagging it was the single largest
+    source of noise in a pilot on a real codebase (79 of 88 findings), and a review
+    bot that cries wolf gets muted.
     """
 
     rule_id = "select-star"
 
     def check(self, context: RuleContext) -> list[Finding]:
+        if context.query.kind is QueryKind.SPRING_DATA_DERIVED:
+            return []
         stars = [star for star in context.ast.find_all(exp.Star) if not self._is_count_star(star)]
         # A qualified `t.*` parses as a Column whose `this` is a Star, which the
         # Star walk above already reaches, so no separate pass is needed.
