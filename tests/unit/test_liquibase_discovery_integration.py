@@ -139,9 +139,10 @@ def test_explicit_path_overrides_discovery_even_when_discovery_would_disagree() 
         cli.review(recorded.repo, recorded.number, client=fake.client, dry_run=True)
 
     # The explicit (unloadable) path wins and degrades to no schema — not the
-    # discovered, perfectly loadable one. Discovery is never even consulted:
-    # `application.properties` is never read.
-    assert not any(path == _APPLICATION_PROPERTIES for path, _ in fake.head_reads)
+    # discovered, perfectly loadable one. Discovery is never consulted for the
+    # schema: the changelog it would have pointed at is never read. (The properties
+    # file itself may be read, for SQL dialect detection — a different question.)
+    assert not any(path.endswith("changelog/other.xml") for path, _ in fake.head_reads)
 
 
 # --- 12/13. PR changes only Java (service or repository/query) -------------------------

@@ -45,9 +45,9 @@ from typing import TYPE_CHECKING
 from queryguard.integrations.llm import LLMExplanationProvider
 from queryguard.integrations.p6spy import StatementGroup
 from queryguard.models.finding import Finding
-from queryguard.models.query import ExtractedQuery, SourceFile
+from queryguard.models.query import ExtractedQuery, SourceFile, SqlSource
 from queryguard.models.report import Report, RunContext
-from queryguard.pipeline.extract import extract_source
+from queryguard.pipeline.extract import DEFAULT_DIALECT, extract_source
 from queryguard.pipeline.extract.java_structure import ResolveJavaSource
 from queryguard.pipeline.report import DEFAULT_MAX_FINDINGS, cap_findings, rank_findings
 from queryguard.pipeline.static_rules import RuleEngine
@@ -101,12 +101,16 @@ class AnalysisRunner:
         engine: RuleEngine | None = None,
         *,
         llm_provider: LLMExplanationProvider | None = None,
+        dialect: str | None = None,
     ) -> None:
         # Constructed eagerly, not per run: RuleEngine reads the live rule registry
         # through a property, so a shared instance still sees rules registered after
         # it was built.
         self._engine = engine if engine is not None else RuleEngine()
         self._llm_provider = llm_provider
+        # The repository's SQL dialect, when known. None keeps every source on the
+        # default, which is what a caller that never heard of dialects gets.
+        self._dialect = dialect
 
     def run(
         self,
@@ -276,6 +280,40 @@ class AnalysisRunner:
         )
         return policy.evaluate(report, findings=all_findings)
 
+    def _with_dialect(self, source: SourceFile) -> SourceFile:
+        """Hand a plain ``.sql`` source to the SQL extractor with this run's dialect.
+
+        A bare :class:`SourceFile` cannot carry a dialect (that would put SQL's
+        concerns on every language's input model), so it is promoted to the
+        :class:`SqlSource` that can. A source the caller already typed, and any
+        non-SQL file, is left alone.
+        """
+        if (
+            self._dialect is None
+            or type(source) is not SourceFile
+            or not source.path.lower().endswith(".sql")
+        ):
+            return source
+        return SqlSource(
+            path=source.path, content=source.content, hunks=source.hunks, dialect=self._dialect
+        )
+
+    def _apply_dialect(self, queries: list[ExtractedQuery]) -> list[ExtractedQuery]:
+        """Re-label queries that were read as the default so rules parse them as this run's.
+
+        Java extraction has no dialect of its own: a native query or a derived
+        method's rendering is parsed by the rule engine from ``query.dialect``, so
+        it has to carry the repository's.
+        """
+        if self._dialect is None:
+            return queries
+        return [
+            query.model_copy(update={"dialect": self._dialect})
+            if query.dialect == DEFAULT_DIALECT
+            else query
+            for query in queries
+        ]
+
     def _extract(
         self, context: RunContext, sources: Sequence[SourceFile]
     ) -> tuple[list[ExtractedQuery], list[str]]:
@@ -297,7 +335,7 @@ class AnalysisRunner:
                 # The whole model, not `(path, content)`: a source may carry
                 # options its extractor needs — `SqlSource.dialect` is one — and
                 # unpacking it here would silently drop them.
-                extracted = extract_source(source)
+                extracted = self._apply_dialect(extract_source(self._with_dialect(source)))
             except Exception:
                 # Stage boundary. The extractor already turns malformed SQL into an
                 # unanalyzable candidate, so reaching here means something genuinely

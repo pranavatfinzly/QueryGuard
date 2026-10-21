@@ -400,6 +400,38 @@ def _java_source_resolver(context: RunContext, client: Github) -> ResolveJavaSou
     return resolve
 
 
+def _resolve_dialect(context: RunContext, client: Github) -> tuple[str | None, list[str]]:
+    """The SQL dialect for this run, plus any degradation worth naming.
+
+    ``QUERYGUARD_SQL_DIALECT`` wins; otherwise it is detected from the repository's
+    own JDBC URL at the PR head (:func:`~queryguard.db.dialect.detect_sql_dialect`).
+    ``None`` means "keep the default". An override ``sqlglot`` cannot read is named
+    in the report and ignored rather than silently producing a Postgres run that the
+    operator believes is MySQL.
+    """
+    from queryguard.config import get_settings
+    from queryguard.db.dialect import detect_sql_dialect, is_known_dialect
+    from queryguard.integrations.github import GitHubUnavailable, read_file_at_ref
+
+    override = (get_settings().sql_dialect or "").strip()
+    if override:
+        if is_known_dialect(override):
+            return override, []
+        return None, [f"sql_dialect:unknown dialect {override!r}; reading SQL as the default"]
+
+    head_sha = context.head_sha
+    if head_sha is None:
+        return None, []
+
+    def read(path: str) -> str | None:
+        try:
+            return read_file_at_ref(context, path, ref=head_sha, client=client)
+        except GitHubUnavailable:
+            return None
+
+    return detect_sql_dialect(read), []
+
+
 def review(
     repo: str,
     pr_number: int,
@@ -468,19 +500,21 @@ def review(
         result = policy.evaluate(report)
     else:
         context = ingested.context
+        dialect_degraded: list[str] = []
         if runner is not None:
             resolved_runner = runner
         else:
             schema = _load_effective_schema(context, ingested, resolved_client)
+            dialect, dialect_degraded = _resolve_dialect(context, resolved_client)
             resolved_runner = AnalysisRunner(
-                engine=RuleEngine(schema=schema), llm_provider=llm_provider
+                engine=RuleEngine(schema=schema), llm_provider=llm_provider, dialect=dialect
             )
         result = resolved_runner.run_review(
             repo=context.repo,
             pr_number=context.pr_number,
             sources=ingested.sources,
             context=context,
-            initial_degraded_stages=ingested.degraded_stages,
+            initial_degraded_stages=[*ingested.degraded_stages, *dialect_degraded],
             resolve_source=_java_source_resolver(context, resolved_client),
             enforcement_policy=policy,
         )
