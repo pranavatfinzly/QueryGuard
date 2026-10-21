@@ -14,7 +14,12 @@ from typing import TYPE_CHECKING
 
 from queryguard.models.report import Report, RunContext
 from queryguard.pipeline.diff import INGEST_STAGE
-from queryguard.policy import EnforcementPolicy, EnforcementStatus, ReviewResult
+from queryguard.policy import (
+    EnforcementPolicy,
+    EnforcementStatus,
+    InvalidEnforcementPolicy,
+    ReviewResult,
+)
 
 if TYPE_CHECKING:
     from github import Github
@@ -462,6 +467,17 @@ def _load_repo_config(context: RunContext, client: Github) -> tuple[RepoConfig, 
         return RepoConfig(), [f"repo_config:{error}"]
 
 
+def _scope_to_changes() -> bool:
+    """Whether findings are limited to code the PR touched (``QUERYGUARD_SCOPE``)."""
+    from queryguard.config import get_settings
+
+    scope = get_settings().scope.strip().lower() or "changed"
+    if scope not in {"changed", "all"}:
+        msg = f"QUERYGUARD_SCOPE must be 'changed' or 'all', not {scope!r}"
+        raise InvalidEnforcementPolicy(msg)
+    return scope == "changed"
+
+
 def review(
     repo: str,
     pr_number: int,
@@ -566,6 +582,7 @@ def review(
                 ),
                 llm_provider=llm_provider,
                 dialect=dialect,
+                scope_to_changes=_scope_to_changes(),
             )
         result = resolved_runner.run_review(
             repo=context.repo,

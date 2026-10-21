@@ -67,21 +67,25 @@ def ingest(
 def test_a_hunk_header_yields_both_coordinate_systems() -> None:
     hunks = parse_hunks("@@ -57,3 +60,4 @@\n ctx\n ctx\n ctx\n+added\n")
 
-    assert hunks == [Hunk(base_start=57, base_lines=3, head_start=60, head_lines=4)]
+    assert hunks == [
+        Hunk(base_start=57, base_lines=3, head_start=60, head_lines=4, added_ranges=[(63, 63)])
+    ]
 
 
 def test_an_omitted_count_means_one_line() -> None:
     # The unified-diff convention, and the classic off-by-one in a hand-rolled
     # parser: `@@ -1 +1 @@` is a one-line hunk, not a zero-line one.
     assert parse_hunks("@@ -1 +1 @@\n-old\n+new\n") == [
-        Hunk(base_start=1, base_lines=1, head_start=1, head_lines=1)
+        Hunk(base_start=1, base_lines=1, head_start=1, head_lines=1, added_ranges=[(1, 1)])
     ]
 
 
 def test_a_new_file_starts_the_base_side_at_zero() -> None:
     hunks = parse_hunks("@@ -0,0 +1,2 @@\n+one\n+two\n")
 
-    assert hunks == [Hunk(base_start=0, base_lines=0, head_start=1, head_lines=2)]
+    assert hunks == [
+        Hunk(base_start=0, base_lines=0, head_start=1, head_lines=2, added_ranges=[(1, 2)])
+    ]
 
 
 def test_removed_lines_do_not_advance_the_head_side() -> None:
@@ -102,7 +106,7 @@ def test_the_no_newline_marker_is_not_a_line() -> None:
     # `\ No newline at end of file` annotates the line above it. Counting it makes
     # every hunk one line too long and fails the length check below.
     assert parse_hunks("@@ -1,1 +1,1 @@\n-old\n+new\n\\ No newline at end of file\n") == [
-        Hunk(base_start=1, base_lines=1, head_start=1, head_lines=1)
+        Hunk(base_start=1, base_lines=1, head_start=1, head_lines=1, added_ranges=[(1, 1)])
     ]
 
 
@@ -121,7 +125,9 @@ def test_a_file_preamble_before_the_first_hunk_is_ignored() -> None:
         "@@ -1,1 +1,1 @@\n+one\n"
     )
 
-    assert parse_hunks(patch) == [Hunk(base_start=1, base_lines=1, head_start=1, head_lines=1)]
+    assert parse_hunks(patch) == [
+        Hunk(base_start=1, base_lines=1, head_start=1, head_lines=1, added_ranges=[(1, 1)])
+    ]
 
 
 def test_an_empty_patch_has_no_hunks() -> None:
@@ -524,3 +530,39 @@ def test_a_renamed_file_anchors_its_new_query_under_the_new_path(
     assert added.provenance.file == source.path
     assert added.provenance.line is not None
     assert source.is_changed(added.provenance.line)
+
+
+# --- the exact lines a change wrote, as opposed to the context around them ----------
+
+
+def test_added_ranges_exclude_the_context_github_pads_a_hunk_with() -> None:
+    patch = "@@ -10,6 +10,7 @@\n c1\n c2\n c3\n+new\n c4\n c5\n c6\n"
+
+    (hunk,) = parse_hunks(patch)
+
+    assert hunk.added_ranges == [(13, 13)]
+    assert hunk.covers(11)  # context: inside the hunk...
+    assert not hunk.touches(11)  # ...but not written by the change
+    assert hunk.touches(13)
+    assert not hunk.touches(15)
+
+
+def test_adjacent_added_lines_form_one_range_and_a_gap_starts_another() -> None:
+    patch = "@@ -1,3 +1,5 @@\n+a\n+b\n ctx\n-gone\n+c\n ctx\n"
+
+    (hunk,) = parse_hunks(patch)
+
+    assert hunk.added_ranges == [(1, 2), (4, 4)]
+
+
+def test_a_pure_deletion_adds_no_line() -> None:
+    (hunk,) = parse_hunks("@@ -4,3 +4,1 @@\n-gone\n-gone\n kept\n")
+
+    assert hunk.added_ranges == []
+
+
+def test_a_hunk_with_no_known_ranges_falls_back_to_its_span() -> None:
+    hunk = Hunk(base_start=1, base_lines=0, head_start=5, head_lines=3)
+
+    assert hunk.touches(6)
+    assert not hunk.touches(9)

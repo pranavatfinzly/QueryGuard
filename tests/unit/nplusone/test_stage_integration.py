@@ -317,3 +317,66 @@ def test_the_sandbox_healthy_counterpart_is_not_flagged() -> None:
     assert all(
         finding.provenance.symbol != "buildCustomerOrderSummaryBatched" for finding in findings
     )
+
+
+# --- Scoped to what the pull request changed ---------------------------------------
+# LOOP opens at line 14 and the repository call is on line 15.
+
+
+def _scoped(service: Build, repository: Build, *, changed_line: int):  # type: ignore[no-untyped-def]
+    from queryguard.models.query import Hunk
+
+    hunk = Hunk(base_start=changed_line, base_lines=0, head_start=changed_line, head_lines=1)
+    return AnalysisRunner().run_review(
+        repo="acme/example",
+        pr_number=1,
+        sources=[service(LOOP).model_copy(update={"hunks": [hunk]}), repository(DERIVED)],
+    )
+
+
+def test_a_pr_that_adds_the_loop_owns_the_finding(service: Build, repository: Build) -> None:
+    # The call on line 15 is old; the PR wrapped it in a loop opened on line 14.
+    result = _scoped(service, repository, changed_line=14)
+
+    assert len(nplusone_findings(result.findings)) == 1
+    assert result.report.unchanged_findings == 0
+
+
+def test_a_pr_that_edits_the_call_owns_the_finding(service: Build, repository: Build) -> None:
+    result = _scoped(service, repository, changed_line=15)
+
+    assert len(nplusone_findings(result.findings)) == 1
+
+
+def test_a_pr_that_edits_elsewhere_in_the_file_does_not(service: Build, repository: Build) -> None:
+    result = _scoped(service, repository, changed_line=40)
+
+    assert nplusone_findings(result.findings) == []
+    assert result.report.unchanged_findings == 1
+
+
+LONG_LOOP = """
+        for (Parent parent : parents) {
+            audit(parent);
+            audit(parent);
+            thingRepository.findByParentId(parent.getId());
+        }
+"""
+
+
+def test_an_edit_inside_the_loop_body_does_not_make_the_pr_own_the_pattern(
+    service: Build, repository: Build
+) -> None:
+    from queryguard.models.query import Hunk
+
+    # The loop opens on line 14 and the call is on line 17. The PR touched line 15: an
+    # unrelated statement in between. It wrote neither the loop nor the call.
+    hunk = Hunk(base_start=15, base_lines=0, head_start=15, head_lines=1)
+    source = service(LONG_LOOP).model_copy(update={"hunks": [hunk]})
+
+    result = AnalysisRunner().run_review(
+        repo="acme/example", pr_number=1, sources=[source, repository(DERIVED)]
+    )
+
+    assert nplusone_findings(result.findings) == []
+    assert result.report.unchanged_findings == 1

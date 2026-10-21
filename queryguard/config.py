@@ -150,6 +150,12 @@ class Settings(BaseSettings):
         "every schema-dependent static rule stays silent, exactly as before this "
         "setting existed.",
     )
+    scope: str = Field(
+        default="changed",
+        validation_alias="QUERYGUARD_SCOPE",
+        description="'changed' (default) reports and enforces only findings on code the pull "
+        "request touched; 'all' also reports findings on unchanged code in the files it edits.",
+    )
     sql_dialect: str | None = Field(
         default=None,
         validation_alias="QUERYGUARD_SQL_DIALECT",

@@ -93,11 +93,22 @@ def parse_hunks(patch: str) -> list[Hunk]:
     # (``diff --git``, ``index``, ``---``, ``+++``), which GitHub's per-file patch
     # omits but a patch read from a ``.diff`` file does not.
     consumed: int | None = None
+    # Head line the next body line sits on, and the runs of added lines seen so far in
+    # the hunk being read. A hunk's span includes GitHub's context padding, so the
+    # exact added lines are tracked separately (see ``Hunk.added_ranges``).
+    head_line = 0
+    runs: list[tuple[int, int]] = []
+
+    def finish() -> None:
+        if hunks and runs:
+            hunks[-1] = hunks[-1].model_copy(update={"added_ranges": list(runs)})
+        runs.clear()
 
     for raw in patch.splitlines():
         header = _HUNK_HEADER.match(raw)
         if header is not None:
             _check_declared_length(hunks, consumed)
+            finish()
             hunks.append(
                 Hunk(
                     base_start=int(header["base_start"]),
@@ -106,6 +117,7 @@ def parse_hunks(patch: str) -> list[Hunk]:
                     head_lines=int(header["head_lines"] or 1),
                 )
             )
+            head_line = int(header["head_start"])
             consumed = 0
             continue
 
@@ -116,7 +128,16 @@ def parse_hunks(patch: str) -> list[Hunk]:
             continue
         if raw.startswith("-"):
             continue
-        if raw.startswith(("+", " ")):
+        if raw.startswith("+"):
+            if runs and runs[-1][1] == head_line - 1:
+                runs[-1] = (runs[-1][0], head_line)
+            else:
+                runs.append((head_line, head_line))
+            head_line += 1
+            consumed += 1
+            continue
+        if raw.startswith(" "):
+            head_line += 1
             consumed += 1
             continue
         if raw == "":
@@ -124,12 +145,14 @@ def parse_hunks(patch: str) -> list[Hunk]:
             # whitespace does not survive every editor, mail gateway, or copy out
             # of a browser. Reading it as the blank context line it plainly is
             # costs nothing; rejecting it would fail files that are fine.
+            head_line += 1
             consumed += 1
             continue
 
         msg = f"unrecognized patch line: {raw[:60]!r}"
         raise MalformedPatch(msg)
 
+    finish()
     _check_declared_length(hunks, consumed)
 
     if not hunks and patch.strip():

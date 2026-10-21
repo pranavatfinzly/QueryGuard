@@ -89,6 +89,25 @@ No fork of QueryGuard, no copy of its source, no per-repo Python environment
 to maintain — every consumer always runs whatever `queryguard-ref` resolves
 to (a tag once one exists, `main` today).
 
+## What a review covers: the lines the PR changed
+
+QueryGuard reports and enforces only findings on code the pull request **wrote**.
+A pilot on a real repository showed why: a PR that changed 225 lines was blocked by
+16 findings, none of them on a line it touched, all of them pre-existing code in files
+it happened to edit. Holding every edit to the file's history is how a gate gets
+switched off.
+
+- A query finding counts when any line of that statement was added or rewritten.
+- An N+1 finding counts when the PR wrote the **loop line or the call line**. An
+  unrelated edit somewhere inside a long loop body does not make the PR the author of
+  the loop.
+- Unchanged context lines around an edit (GitHub pads every hunk with three) do not
+  count as changed.
+- The review says how many findings it left out ("2 more findings in code this change
+  did not touch are not shown"), so a quiet review is never mistaken for a clean file.
+- Set `QUERYGUARD_SCOPE=all` to report and enforce on every finding in a changed file
+  instead (useful for a one-off audit of a legacy module).
+
 ## SQL dialect (MySQL, Oracle, SQL Server, Postgres)
 
 SQL is parsed with `sqlglot`, and the dialect decides whether a statement parses at

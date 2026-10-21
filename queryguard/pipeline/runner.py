@@ -45,7 +45,7 @@ from typing import TYPE_CHECKING
 from queryguard.integrations.llm import LLMExplanationProvider
 from queryguard.integrations.p6spy import StatementGroup
 from queryguard.models.finding import Finding
-from queryguard.models.query import ExtractedQuery, SourceFile, SqlSource
+from queryguard.models.query import ExtractedQuery, QueryKind, SourceFile, SqlSource
 from queryguard.models.report import Report, RunContext
 from queryguard.pipeline.extract import DEFAULT_DIALECT, extract_source
 from queryguard.pipeline.extract.java_structure import ResolveJavaSource
@@ -102,6 +102,7 @@ class AnalysisRunner:
         *,
         llm_provider: LLMExplanationProvider | None = None,
         dialect: str | None = None,
+        scope_to_changes: bool = True,
     ) -> None:
         # Constructed eagerly, not per run: RuleEngine reads the live rule registry
         # through a property, so a shared instance still sees rules registered after
@@ -111,6 +112,9 @@ class AnalysisRunner:
         # The repository's SQL dialect, when known. None keeps every source on the
         # default, which is what a caller that never heard of dialects gets.
         self._dialect = dialect
+        # Report and enforce only what the pull request touched. A source with no
+        # hunks (SQL handed in whole, the HTTP API) is entirely in scope either way.
+        self._scope_to_changes = scope_to_changes
 
     def run(
         self,
@@ -226,6 +230,9 @@ class AnalysisRunner:
         ]
 
         all_findings = rank_findings(findings)
+        unchanged_findings = 0
+        if self._scope_to_changes:
+            all_findings, unchanged_findings = self._scope(all_findings, queries, sources)
         findings, omitted_findings = cap_findings(all_findings, max_findings=max_findings)
         policy = enforcement_policy if enforcement_policy is not None else EnforcementPolicy()
 
@@ -239,6 +246,7 @@ class AnalysisRunner:
                 findings=findings,
                 degraded_stages=degraded_stages,
                 omitted_findings=omitted_findings,
+                unchanged_findings=unchanged_findings,
             )
             try:
                 comment_id = upsert_report_comment(context, temp_report, client=client)
@@ -277,8 +285,54 @@ class AnalysisRunner:
             degraded_stages=degraded_stages,
             comment_id=comment_id,
             omitted_findings=omitted_findings,
+            unchanged_findings=unchanged_findings,
         )
         return policy.evaluate(report, findings=all_findings)
+
+    @staticmethod
+    def _scope(
+        findings: list[Finding], queries: list[ExtractedQuery], sources: Sequence[SourceFile]
+    ) -> tuple[list[Finding], int]:
+        """Keep the findings whose code this pull request touched; count the rest.
+
+        Found on a real pilot: a PR that changed 225 lines was blocked by 16 findings,
+        none of them on a line it changed — legacy code in files it happened to edit.
+        Holding a PR to the whole file's history makes every edit a debt collection,
+        which is how a gate gets switched off. A finding is in scope when the extent
+        it concerns was changed: any line of the statement for a query, the loop line
+        or the call line for an N+1. A source with no hunks did not
+        come from a diff, so everything in it is in scope.
+        """
+        by_path = {source.path: source for source in sources}
+        by_id = {query.id: query for query in queries}
+        kept: list[Finding] = []
+        for finding in findings:
+            source = by_path.get(finding.provenance.file)
+            if source is None or not source.hunks or finding.provenance.line is None:
+                kept.append(finding)
+                continue
+            start = finding.provenance.span_start
+            end = finding.provenance.span_end
+            if start is not None and end is not None:
+                # A span names two lines that matter, the loop that repeats and the
+                # call it repeats, with arbitrary code between them. The PR owns the
+                # pattern if it wrote either end; an unrelated edit somewhere inside a
+                # seventy-line loop body does not make it the author of the loop.
+                touched = any(hunk.touches(start) or hunk.touches(end) for hunk in source.hunks)
+            else:
+                start = finding.provenance.line
+                end = start
+                query = by_id.get(finding.query_id) if finding.query_id else None
+                # A derived method's text is rendered by QueryGuard, so its newlines
+                # say nothing about how many source lines the declaration spans.
+                if query is not None and query.kind is not QueryKind.SPRING_DATA_DERIVED:
+                    end = start + query.text.count("\n")
+                touched = any(
+                    hunk.touches(line) for hunk in source.hunks for line in range(start, end + 1)
+                )
+            if touched:
+                kept.append(finding)
+        return kept, len(findings) - len(kept)
 
     def _with_dialect(self, source: SourceFile) -> SourceFile:
         """Hand a plain ``.sql`` source to the SQL extractor with this run's dialect.
